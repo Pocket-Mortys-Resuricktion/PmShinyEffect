@@ -76,6 +76,20 @@
   .dial { width: 76px; height: 76px; touch-action: none; cursor: grab; }
   .dial:active { cursor: grabbing; }
   /* colour picker popover */
+  .dice { font-size: 13px; line-height: 1; padding: 1px 4px; border-radius: 3px; cursor: pointer; color: var(--muted); text-transform: none; }
+  .dice:hover { background: #55555c; color: var(--text); }
+  .lim { display: grid; grid-template-columns: auto 1fr 54px 54px; gap: 4px 6px; align-items: center; }
+  .lim .grp { grid-column: 1 / -1; color: #b9c6d6; font-weight: 600; margin-top: 6px; font-size: 11px; text-transform: uppercase; }
+  .sset { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; margin: 6px 0; }
+  .sset .it { background: var(--field); border: 1px solid var(--line); border-radius: 4px; padding: 4px; display: grid; gap: 3px; }
+  .sset .it.off { opacity: .45; }
+  .sset .th { height: 56px; border-radius: 3px; background: repeating-conic-gradient(#555 0 25%, #444 0 50%) 0 0 / 10px 10px;
+    display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .sset .th img { max-width: 52px; max-height: 52px; image-rendering: auto; }
+  .sset .nm { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sset .ctr { display: flex; gap: 4px; align-items: center; font-size: 10px; }
+  .sset .ctr input.num { width: 38px; padding: 1px 3px; }
+  .sset .drop { outline: 2px dashed var(--accent); }
   .picker { position: fixed; z-index: 50; background: #2a2a2d; border: 1px solid #55555c; border-radius: 8px; padding: 10px;
     width: 236px; box-shadow: 0 10px 30px #000a; }
   .picker .sw { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-bottom: 8px; }
@@ -142,6 +156,20 @@
         <p class="hint">Switch effects on and off with the toggles on each section. In the game shiny and pulsing never run together, but here you can stack them. Settings marked • differ from the game.</p>
       </div>
     </details>
+    <details id="randPanel">
+      <summary><span class="title">Randomise</span></summary>
+      <div class="body">
+        <div class="row"><button class="primary small" id="randAll">Randomise</button><button class="small" id="randUndo" disabled>Undo</button>
+          <button class="small" id="randReset" title="Put every limit back to its default">Reset limits</button></div>
+        <div class="ctl" id="wildRow"><span>Wildness</span><input type="range" id="wild" min="0" max="100" step="1" value="60"><input class="num" id="wildNum" type="text"></div>
+        <div class="hint" style="margin-top:2px">0% keeps game values, 100% uses the whole allowed range. Lower = closer to the game.</div>
+        <div id="randSections" class="row" style="margin:6px 0"></div>
+        <label><input type="checkbox" id="randToggles"> Also switch effects on and off at random</label>
+        <details style="margin-top:8px;background:var(--field)"><summary><span class="title">Limits</span></summary>
+          <div class="body"><p class="hint">Randomised values always stay between Min and Max. Untick a setting to keep it as it is.</p><div id="randLimits"></div></div></details>
+        <p class="hint">Each effect section also has its own dice button.</p>
+      </div>
+    </details>
     <div id="controls"></div>
     <p class="note" style="padding:0 4px">Defaults reproduce Pocket Mortys' shaders (AllIn1SpriteShader) and the overworld shiny particle system, with timing measured from captures of the game.</p>
   </aside>
@@ -179,9 +207,10 @@ const ASSET_PULSE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAYAA
  *  One particle at a time, a new one each 1 s, lifetime 1 s, sparkle1 texture, alpha-blended, no fade.
  *  Data: single-sided edge emitter (radius 0.45), start speed 0..0.2, size 0.5..0.8, rotation 0..360°,
  *  colour random between #FFFCC4 and white.
- *  Measured from overworld footage (13 sparkles, % of the body's height): spawn height ≈32% from the
- *  feet, x spread ≈±37%, size 38–52%, rises 0–10%/s, grows ≈8% over its life, rotation fixed per
- *  sparkle (drift under 1.5°).
+ *  Measured from overworld footage (sparkles isolated by subtracting the same point of the next 2.2 s
+ *  cycle; % of the body's height): every sparkle spawns at the same height, ≈27% up from the feet;
+ *  x spread ≈±30%; size varies 28–62% between sparkles; some rise 0–6%/s, others stay put; size and
+ *  rotation stay fixed for the sparkle's whole life; each new sparkle gets a new random angle.
  * ========================================================================== */
 
 const GAME = {
@@ -196,16 +225,17 @@ const GAME = {
   pulseOn: false, pulses: 1, pulseWave: "tri", pulseMin: 0, pulseMax: 100, pulsePhase: 0,
   tint: "#7daa57", pulseGlowOn: true, pulseGlow: 1.5, glowColor: "#60b92f", glowTex: "game",
   outlineOn: true, outlineColor: "#60b92f", outlineAlpha: 58.4, outlineWidth: 9.54, outlineGlow: 1, outline8: false,
+  pulseHue: false, layerOrder: "shineTop",
   // sparkles
-  sparkOn: false, sparkMode: "game", sparkRate: 1, sparkLife: 1, sparkMax: 1, sparkSizeMin: 38, sparkSizeMax: 52,
-  sparkGrow: 8, sparkGrowRand: 0, sparkCurve: "linear", sparkTwinkle: 2, sparkTwinkleAmt: 35,
-  sparkHue: false, sparkShine: false, sparkPulse: false, sparkX: 50, sparkSpreadX: 37, sparkY: 32, sparkSpreadY: 0, sparkSpeedMin: 0, sparkSpeedMax: 10,
+  sparkOn: false, sparkMode: "game", sparkRate: 1, sparkLife: 1, sparkMax: 1, sparkSizeMin: 28, sparkSizeMax: 62,
+  sparkGrow: 0, sparkGrowRand: 0, sparkCurve: "linear", sparkTwinkle: 2, sparkTwinkleAmt: 35,
+  sparkHue: false, sparkShine: false, sparkPulse: false, sparkX: 50, sparkSpreadX: 30, sparkY: 27, sparkSpreadY: 0, sparkSpeedMin: 0, sparkSpeedMax: 6,
   sparkMinDist: 0, sparkMaxDist: 8, sparkRot: true, sparkSpin: 0, sparkSpinRand: 0, sparkFadeIn: 0, sparkFadeOut: 0, sparkGrad: [[0, "#fffcc4"], [1, "#ffffff"]], sparkSeed: 1,
-  sparkOpacity: 100,
+  sparkOpacity: 100, sparkGame: true, sparkGameWeight: 1, sparkTintCustom: false,
   // timing / alpha / canvas
-  loop: 2.2, fps: 24, scaleTiming: true, cutoffOn: false, cutoff: 0.25, pad: 0,
+  loop: 2.2, fps: 24, scaleTiming: true, cutoffOn: false, cutoff: 0.25, pad: 0, autoPad: true,
   // export
-  scale: 1, matte: "none", matteColor: "#1b4f8a", sheetCols: 0, gifAlpha: 50,
+  scale: 1, trim: true, matte: "none", matteColor: "#1b4f8a", sheetCols: 0, gifAlpha: 50,
 };
 const BUILTIN = {
   "Shiny: battle (game default)": {},
@@ -295,6 +325,8 @@ const SECTIONS = [
     ["range", "outlineWidth", "Outline width", 0.5, 40, 0.01, "px", 2],
     ["range", "outlineGlow", "Outline glow", 0, 4, 0.01, "", 2],
     ["check", "outline8", "8-direction outline"],
+    ["check", "pulseHue", "Shiny colours also shift the pulse glow and outline"],
+    ["select", "layerOrder", "Layer order", [["shineTop", "Shine on top of pulse"], ["pulseTop", "Pulse on top of shine"]]],
   ]],
   ["Sparkles", "sparkOn", false, [
     ["select", "sparkMode", "Placement", [["game", "Game: along a line through the body"], ["random", "Randomised: anywhere near the body"]]],
@@ -311,7 +343,7 @@ const SECTIONS = [
     ["range", "sparkSpreadY", "Spread Y ±", 0, 100, 0.5, "%", 1],
     ["range", "sparkSpeedMin", "Rise min", -50, 50, 0.1, "%/s", 1],
     ["range", "sparkSpeedMax", "Rise max", -50, 50, 0.1, "%/s", 1],
-    ["select", "sparkCurve", "Size over life", [["linear", "Steady growth (game)"], ["pop", "Pop in and out"], ["twinkle", "Twinkle (pulse)"]]],
+    ["select", "sparkCurve", "Size over life", [["linear", "Steady (game: no growth)"], ["pop", "Pop in and out"], ["twinkle", "Twinkle (pulse)"]]],
     ["range", "sparkGrow", "Grow over life", -100, 200, 1, "%", 0],
     ["range", "sparkGrowRand", "Random grow ±", 0, 200, 1, "%", 0],
     ["range", "sparkTwinkle", "Twinkles / life", 0.5, 10, 0.5, "", 1],
@@ -327,7 +359,7 @@ const SECTIONS = [
     ["check", "sparkHue", "Shiny colours tint the sparkles"],
     ["check", "sparkShine", "Shine passes over the sparkles"],
     ["check", "sparkPulse", "Pulse tints the sparkles"],
-    ["file", "sparkTex", "Sparkle image"],
+    ["sparkset", "sparkSet", "Sparkle images"],
   ]],
   ["Timing", null, true, [
     ["range", "loop", "Loop length", 0.2, 10, 0.01, "s", 2],
@@ -337,10 +369,12 @@ const SECTIONS = [
   ["Alpha & canvas", null, false, [
     ["check", "cutoffOn", "Alpha cutoff"],
     ["range", "cutoff", "Cutoff", 0, 1, 0.005, "", 3],
-    ["range", "pad", "Canvas padding", 0, 256, 1, "px", 0],
+    ["check", "autoPad", "Grow the canvas to fit sparkles and outlines"],
+    ["range", "pad", "Extra padding", 0, 256, 1, "px", 0],
   ]],
 ];
 const EXPORT_DEFS = [
+  ["check", "trim", "Trim empty space (crop to what the animation uses)"],
   ["range", "scale", "Upscale", 1, 8, 1, "×", 0],
   ["select", "matte", "Background", [["none", "Transparent"], ["color", "Matte colour"]]],
   ["color", "matteColor", "Matte colour"],
@@ -350,10 +384,50 @@ const EXPORT_DEFS = [
 const HINTS = {
   "Shine": "The dial sets the side the band comes from: drag the handle, Shift snaps to 15°, double-click resets to the game. Positions: 1 is the start corner, 0 the opposite one.",
   "Pulsing": "Game pulsing draws a green-tinted, glowing, outlined copy over the sprite and fades it in and out. The game outline is 9.5 px on full-size Morty art (about 2% of its height); use less on small or pixel-art sprites.",
-  "Sparkles": "Game sparkles appear only in the overworld. Sizes and distances are % of the sprite's height. In the game each sparkle keeps its rotation and grows slightly; the next one gets a new random angle and size. Randomised placement drops sparkles anywhere whose centre is between the min and max distance from the body's edge (0 = on the body). Raise the canvas padding if sparkles get cut off.",
+  "Sparkles": "Game sparkles appear only in the overworld. Sizes and distances are % of the sprite's height. In the game each sparkle keeps its size and rotation for its whole life; the next one gets a new random angle and size, and some drift upward. Randomised placement drops sparkles anywhere whose centre is between the min and max distance from the body's edge (0 = on the body). The canvas grows automatically so sparkles never get cut off (Alpha & canvas).",
   "Timing": "Hue turns, shines, pulses and sparkles all repeat a whole number of times per loop, so every export loops seamlessly.",
 };
 
+/* ---------------- randomiser limits ----------------
+ * [key, label, min, max, integer?] for numbers; [key, label, "pick", options] for choices;
+ * [key, label, "color"] / [key, label, "grad"] / [key, label, "bool"].
+ * min/max are the default limits; users can change them under Randomise → Limits. */
+const RAND_GROUPS = {
+  "Shiny colours": [
+    ["hueMode", "Animation", "pick", ["spin", "pingpong", "static"]], ["hueAlgo", "Colour maths", "pick", ["game", "hsv"]],
+    ["spins", "Turns per loop", -2, 2, true], ["hue", "Hue shift", 0, 360], ["hueA", "Ping-pong from", 0, 360], ["hueB", "Ping-pong to", 0, 360],
+    ["sat", "Saturation", 60, 150], ["bright", "Brightness", 80, 120],
+  ],
+  "Shine": [
+    ["angle", "Direction", 0, 360, true], ["width", "Half-width", 3, 20], ["glow", "Glow", 50, 180],
+    ["shineFill", "Colour fill", "pick", ["solid", "along", "across", "time"]], ["color", "Colour", "color"], ["shineGrad", "Gradient", "grad"],
+    ["profile", "Falloff", "pick", ["linear", "smooth", "flat", "hard"]], ["flat", "Core size", 20, 80],
+    ["blend", "Blend", "pick", ["add", "screen", "mix"]], ["bands", "Bands", 1, 3, true], ["spacing", "Band gap", 8, 40],
+    ["sweeps", "Shines per loop", 1, 3, true], ["start", "Starts at", 0, 0.5], ["sweep", "Sweep time", 0.5, 1.6],
+    ["ease", "Easing", "pick", ["linear", "inout", "in", "out"]], ["fullWash", "Fully enters and leaves", "bool"],
+  ],
+  "Pulsing": [
+    ["pulses", "Pulses per loop", 1, 3, true], ["pulseWave", "Wave", "pick", ["tri", "sine", "square"]],
+    ["pulseMin", "Min strength", 0, 30], ["pulseMax", "Max strength", 50, 100], ["pulsePhase", "Phase", 0, 100],
+    ["tint", "Tint", "color"], ["pulseGlow", "Glow amount", 0.3, 2.5], ["glowColor", "Glow colour", "color"],
+    ["outlineOn", "Outline", "bool"], ["outlineColor", "Outline colour", "color"], ["outlineAlpha", "Outline alpha", 20, 90],
+    ["outlineWidth", "Outline width", 1, 10], ["outlineGlow", "Outline glow", 0.6, 1.6],
+    ["pulseHue", "Shiny shifts pulse", "bool"], ["layerOrder", "Layer order", "pick", ["shineTop", "pulseTop"]],
+  ],
+  "Sparkles": [
+    ["sparkMode", "Placement", "pick", ["game", "random"]], ["sparkRate", "Per second", 0.5, 4], ["sparkLife", "Lifetime", 0.4, 1.5],
+    ["sparkMax", "Max at once", 1, 4, true], ["sparkSizeMin", "Size min", 10, 40], ["sparkSizeMax", "Size max", 25, 70],
+    ["sparkCurve", "Size over life", "pick", ["linear", "pop", "twinkle"]], ["sparkGrow", "Grow over life", -40, 40], ["sparkGrowRand", "Random grow ±", 0, 80],
+    ["sparkTwinkle", "Twinkles / life", 1, 4], ["sparkTwinkleAmt", "Twinkle size", 10, 60],
+    ["sparkX", "Centre X", 35, 65], ["sparkY", "Centre height", 15, 70], ["sparkSpreadX", "Spread X ±", 10, 45], ["sparkSpreadY", "Spread Y ±", 0, 25],
+    ["sparkMinDist", "Min distance", 0, 8], ["sparkMaxDist", "Max distance", 3, 20], ["sparkSpeedMin", "Rise min", -4, 2], ["sparkSpeedMax", "Rise max", 0, 15],
+    ["sparkSpin", "Spin", -180, 180], ["sparkSpinRand", "Random spin ±", 0, 240], ["sparkFadeIn", "Fade in", 0, 30], ["sparkFadeOut", "Fade out", 0, 50],
+    ["sparkOpacity", "Opacity", 70, 100], ["sparkGrad", "Colours", "grad"], ["sparkSeed", "Random seed", 1, 999, true],
+    ["sparkHue", "Shiny tints sparkles", "bool"], ["sparkShine", "Shine over sparkles", "bool"], ["sparkPulse", "Pulse tints sparkles", "bool"],
+  ],
+  "Timing": [["loop", "Loop length", 1.5, 4.4]],
+};
+const TOGGLE_OF = { "Shiny colours": "hueOn", "Shine": "shineOn", "Pulsing": "pulseOn", "Sparkles": "sparkOn" };
 const $ = (id) => document.getElementById(id);
 const view = $("view"), vctx = view.getContext("2d");
 const say = (t) => ($("status").textContent = t);
@@ -451,8 +525,9 @@ function swatchButton(get, set) {
 
 /* ---------------- controls ---------------- */
 const widgets = {};
-const customImg = { mask: null, sparkTex: null, glowTex: null };
-const customName = { mask: "", sparkTex: "", glowTex: "" };
+const customImg = { mask: null, glowTex: null };
+const sparkSet = [];   // user sparkle images: { name, url (PNG data URL), weight, on, tex }
+const customName = { mask: "", glowTex: "" };
 function changed() { invalidate(); persist(); markChanged(); }
 const fmtNum = (v, dec, unit) => (+v).toFixed(dec) + unit;
 
@@ -564,6 +639,44 @@ function makeControl(d, host) {
       b.addEventListener("click", () => syncAction(id)); row.children[1].appendChild(b);
     }
     widgets[key] = { row, set() {}, noPreset: true };
+  } else if (type === "sparkset") {
+    row.className = "";
+    row.innerHTML = `<div class="ctl wide"><span>${label}</span><span class="row"><button class="small add">Add images…</button><button class="small clr">Remove all</button></span></div>
+      <div class="sset"></div>
+      <label><input type="checkbox" class="tint"> Tint my images with the sparkle colours</label>
+      <p class="hint">Each sparkle picks one image at random; a higher weight makes it come up more often. Images are scaled down to 256 px on their longest side, and Size sets that longest side. Drop image files on this box to add them.</p>`;
+    const grid = row.querySelector(".sset"), tint = row.querySelector(".tint");
+    const draw = () => {
+      grid.innerHTML = "";
+      const tile = (thumb, name, on, weight, onToggle, onWeight, onRemove) => {
+        const it = document.createElement("div"); it.className = "it" + (on ? "" : " off");
+        it.innerHTML = `<div class="th"><img alt=""></div><div class="nm"></div><div class="ctr"><input type="checkbox" title="Use this image"><span>×</span><input class="num" title="Weight" inputmode="decimal">${onRemove ? `<button class="small" title="Remove" style="margin-left:auto">✕</button>` : ""}</div>`;
+        it.querySelector("img").src = thumb; it.querySelector(".nm").textContent = name; it.querySelector(".nm").title = name;
+        const cb = it.querySelector("input[type=checkbox]"), wt = it.querySelector("input.num");
+        cb.checked = on; wt.value = weight;
+        cb.addEventListener("change", () => { onToggle(cb.checked); it.classList.toggle("off", !cb.checked); });
+        wt.addEventListener("change", () => { const v = Math.max(0, parseFloat(wt.value) || 0); wt.value = v; onWeight(v); });
+        if (onRemove) it.querySelector("button").addEventListener("click", onRemove);
+        grid.appendChild(it);
+      };
+      tile(ASSET_SPARKLE, "Game sparkle", S.sparkGame, S.sparkGameWeight, (v) => setValue("sparkGame", v), (v) => setValue("sparkGameWeight", v), null);
+      sparkSet.forEach((e, k) => tile(e.url, e.name, e.on, e.weight,
+        (v) => { e.on = v; sparkSetChanged(); }, (v) => { e.weight = v; sparkSetChanged(); },
+        () => { sparkSet.splice(k, 1); sparkSetChanged(); draw(); }));
+      row.querySelector(".clr").disabled = !sparkSet.length;
+      tint.checked = S.sparkTintCustom;
+    };
+    row.querySelector(".add").addEventListener("click", () => {
+      const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.multiple = true;
+      inp.addEventListener("change", () => addSparkFiles([...inp.files]).then(draw)); inp.click();
+    });
+    row.querySelector(".clr").addEventListener("click", () => { sparkSet.length = 0; sparkSetChanged(); draw(); });
+    tint.addEventListener("change", () => setValue("sparkTintCustom", tint.checked));
+    row.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); grid.classList.add("drop"); });
+    row.addEventListener("dragleave", () => grid.classList.remove("drop"));
+    row.addEventListener("drop", (e) => { e.preventDefault(); e.stopPropagation(); grid.classList.remove("drop");
+      addSparkFiles([...e.dataTransfer.files].filter((f) => f.type.startsWith("image/"))).then(draw); });
+    widgets[key] = { row, set: draw, noPreset: true };
   } else if (type === "file") {
     row.innerHTML = `<span>${label}</span><span class="row"><button class="small load">Load…</button><button class="small clr">Default</button><span class="note"></span></span>`;
     const nm = row.querySelector(".note"), clr = row.querySelector(".clr");
@@ -589,7 +702,7 @@ function pickFile(key, then) {
 const sectionEls = {};
 for (const [title, toggleKey, open, defs] of SECTIONS) {
   const det = document.createElement("details"); det.open = open;
-  det.innerHTML = `<summary>${toggleKey ? `<span class="switch" role="switch" tabindex="0" aria-label="Enable ${title}"></span>` : ""}<span class="title">${title}</span></summary><div class="body"></div>`;
+  det.innerHTML = `<summary>${toggleKey ? `<span class="switch" role="switch" tabindex="0" aria-label="Enable ${title}"></span>` : ""}<span class="title">${title}</span>${RAND_GROUPS[title] ? `<span class="dice" role="button" tabindex="0" title="Randomise ${title}">🎲</span>` : ""}</summary><div class="body"></div>`;
   const body = det.querySelector(".body");
   for (const d of defs) makeControl(d, body);
   if (HINTS[title]) body.insertAdjacentHTML("beforeend", `<p class="hint">${HINTS[title]}</p>`);
@@ -599,6 +712,11 @@ for (const [title, toggleKey, open, defs] of SECTIONS) {
     sw.addEventListener("click", flip);
     sw.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") flip(e); });
     widgets[toggleKey] = { row: document.createElement("div"), set(v) { sw.classList.toggle("on", !!v); sw.setAttribute("aria-checked", !!v); det.classList.toggle("off", !v); } };
+  }
+  const dice = det.querySelector(".dice");
+  if (dice) {
+    const go = (e) => { e.preventDefault(); e.stopPropagation(); randomise([title]); };
+    dice.addEventListener("click", go); dice.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") go(e); });
   }
   sectionEls[title] = det;
   $("controls").appendChild(det);
@@ -611,7 +729,6 @@ function setValue(key, v) {
   if (key === "loop" && S.scaleTiming && old > 0) {          // keep the shine's rhythm proportional to the loop
     const k = v / old; S.start *= k; S.sweep *= k; widgets.start.set(S.start); widgets.sweep.set(S.sweep);
   }
-  if (key === "pad") resetDerived(true);
   syncVisibility(); changed();
   if (widgets[key]) widgets[key].set(S[key]);
 }
@@ -716,6 +833,140 @@ function persist(id) {
 fillPresets(presetId);
 applyAll();
 
+/* ---------------- custom sparkle set ---------------- */
+const LS_SPARKS = "shinyMaker.sparkSet.v1", SPARK_MAX = 256;
+async function shrinkToTex(bmpCanvas) {             // scale so the longest side is ≤ 256 px, halving steps for quality
+  let c = bmpCanvas;
+  const fit = SPARK_MAX / Math.max(c.width, c.height);
+  if (fit < 1) {
+    let w = c.width, h = c.height;
+    const tw = Math.max(1, Math.round(w * fit)), th = Math.max(1, Math.round(h * fit));
+    while (w / 2 > tw) {
+      const n = document.createElement("canvas"); n.width = Math.round(w / 2); n.height = Math.round(h / 2);
+      const x = n.getContext("2d"); x.imageSmoothingQuality = "high"; x.drawImage(c, 0, 0, n.width, n.height); c = n; w = n.width; h = n.height;
+    }
+    const n = document.createElement("canvas"); n.width = tw; n.height = th;
+    const x = n.getContext("2d"); x.imageSmoothingQuality = "high"; x.drawImage(c, 0, 0, tw, th); c = n;
+  }
+  const id = c.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, c.width, c.height);
+  return { url: c.toDataURL("image/png"), tex: toTex(id) };
+}
+async function addSparkFiles(files) {
+  let added = 0;
+  for (const f of files) {
+    try {
+      const img = await decodeImage(await f.arrayBuffer());
+      const { url, tex } = await shrinkToTex(img.canvas);
+      sparkSet.push({ name: f.name, url, weight: 1, on: true, tex }); added++;
+    } catch (e) { say(`Couldn't read ${f.name}: ${e.message}`); }
+  }
+  if (added) { sparkSetChanged(); say(`Added ${added} sparkle image${added > 1 ? "s" : ""}.`); }
+}
+function sparkSetChanged() {
+  try { localStorage.setItem(LS_SPARKS, JSON.stringify(sparkSet.map(({ name, url, weight, on }) => ({ name, url, weight, on })))); }
+  catch { say("Too many or too large sparkle images to remember for next time; they'll still work until you close this page."); }
+  invalidate();
+}
+(async () => {                                       // restore the set from last time
+  const saved = lsGet(LS_SPARKS); if (!Array.isArray(saved)) return;
+  for (const e of saved) {
+    try { const img = await decodeImage(await (await fetch(e.url)).arrayBuffer());
+      sparkSet.push({ name: e.name, url: e.url, weight: +e.weight || 0, on: e.on !== false, tex: toTex(img.data) }); } catch {}
+  }
+  widgets.sparkSet?.set(); invalidate();
+})();
+
+/* ---------------- randomiser ---------------- */
+const LS_RAND = "shinyMaker.rand.v1";
+const randState = (() => {
+  const def = { wild: 60, toggles: false, sections: Object.fromEntries(Object.keys(RAND_GROUPS).map((k) => [k, true])), limits: {} };
+  const saved = lsGet(LS_RAND);
+  return saved ? { ...def, ...saved, sections: { ...def.sections, ...(saved.sections || {}) }, limits: saved.limits || {} } : def;
+})();
+const saveRand = () => lsSet(LS_RAND, randState);
+function limitOf(d) {                               // { on, min, max } for one randomisable setting
+  const l = randState.limits[d[0]] || {};
+  return { on: l.on !== false, min: typeof l.min === "number" ? l.min : d[2], max: typeof l.max === "number" ? l.max : d[3] };
+}
+const randColor = () => rgbHex(...hsvToRgb(Math.random() * 360, 0.25 + Math.random() * 0.6, 0.75 + Math.random() * 0.25));
+function randGrad() {
+  const n = 2 + Math.floor(Math.random() * 3), h0 = Math.random() * 360, step = 40 + Math.random() * 100;
+  return Array.from({ length: n }, (_, i) => [i / (n - 1), rgbHex(...hsvToRgb((h0 + i * step) % 360, 0.3 + Math.random() * 0.5, 0.85 + Math.random() * 0.15))]);
+}
+let randUndo = null;
+function randomise(groups) {
+  randUndo = structuredClone(S);
+  const w = randState.wild / 100, pickChance = Math.min(1, w * 1.2);
+  for (const g of groups) {
+    if (!RAND_GROUPS[g]) continue;
+    for (const d of RAND_GROUPS[g]) {
+      const [key, , kind] = d, lim = limitOf(d);
+      if (!lim.on) continue;
+      if (typeof kind === "number") {
+        let lo = Math.min(lim.min, lim.max), hi = Math.max(lim.min, lim.max);
+        let target = lo + Math.random() * (hi - lo);
+        let v = GAME[key] + (target - GAME[key]) * w;      // the counterweight: pull towards the game value
+        v = clamp(v, lo, hi);                               // and never leave the limits
+        if (d[4]) v = Math.round(v);
+        else v = Math.round(v * 1000) / 1000;
+        S[key] = v;
+      } else if (Math.random() < pickChance) {
+        if (kind === "pick") S[key] = d[3][Math.floor(Math.random() * d[3].length)];
+        else if (kind === "bool") S[key] = Math.random() < 0.5;
+        else if (kind === "color") S[key] = randColor();
+        else if (kind === "grad") S[key] = randGrad();
+      } else S[key] = structuredClone(GAME[key]);
+    }
+    if (randState.toggles && TOGGLE_OF[g]) S[TOGGLE_OF[g]] = Math.random() < 0.6;
+  }
+  // keep pairs the right way round
+  const order = (a, b) => { if (S[a] > S[b]) [S[a], S[b]] = [S[b], S[a]]; };
+  order("sparkSizeMin", "sparkSizeMax"); order("pulseMin", "pulseMax"); order("sparkSpeedMin", "sparkSpeedMax"); order("sparkMinDist", "sparkMaxDist");
+  if (S.hueMode === "spin" && S.spins === 0) S.spins = 1;
+  applyAll(); invalidate(); persist();
+  $("randUndo").disabled = false;
+  say(`Randomised ${groups.join(", ")} at ${randState.wild}% wildness. Undo restores the previous settings.`);
+}
+function buildRandPanel() {
+  $("wild").value = randState.wild; $("wildNum").value = randState.wild + "%";
+  $("randToggles").checked = randState.toggles;
+  const secs = $("randSections"); secs.innerHTML = "";
+  for (const g of Object.keys(RAND_GROUPS)) {
+    const l = document.createElement("label"); l.innerHTML = `<input type="checkbox"> ${g}`;
+    const cb = l.querySelector("input"); cb.checked = randState.sections[g];
+    cb.addEventListener("change", () => { randState.sections[g] = cb.checked; saveRand(); });
+    secs.appendChild(l);
+  }
+  const host = $("randLimits"); host.innerHTML = "";
+  const grid = document.createElement("div"); grid.className = "lim"; host.appendChild(grid);
+  for (const [g, defs] of Object.entries(RAND_GROUPS)) {
+    grid.insertAdjacentHTML("beforeend", `<div class="grp">${g}</div>`);
+    for (const d of defs) {
+      const lim = limitOf(d), num = typeof d[2] === "number";
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = lim.on;
+      const lab = document.createElement("span"); lab.textContent = d[1];
+      const mk = (v, which) => {
+        if (!num) { const s = document.createElement("span"); s.className = "note"; s.textContent = which === "min" ? ({ pick: "any option", bool: "on / off", color: "any colour", grad: "any gradient" })[d[2]] : ""; if (which === "min") s.style.gridColumn = "span 2"; return s; }
+        const i = document.createElement("input"); i.className = "num"; i.value = v;
+        i.addEventListener("change", () => {
+          const x = parseFloat(i.value); if (!isFinite(x)) { i.value = limitOf(d)[which]; return; }
+          (randState.limits[d[0]] ||= {})[which] = x; saveRand();
+        });
+        return i;
+      };
+      cb.addEventListener("change", () => { (randState.limits[d[0]] ||= {}).on = cb.checked; saveRand(); });
+      grid.append(cb, lab, mk(lim.min, "min")); if (num) grid.append(mk(lim.max, "max"));
+    }
+  }
+}
+$("wild").addEventListener("input", () => { randState.wild = +$("wild").value; $("wildNum").value = randState.wild + "%"; saveRand(); });
+$("wildNum").addEventListener("change", () => { const v = clamp(parseFloat($("wildNum").value) || 0, 0, 100); randState.wild = v; $("wild").value = v; $("wildNum").value = v + "%"; saveRand(); });
+$("randToggles").addEventListener("change", () => { randState.toggles = $("randToggles").checked; saveRand(); });
+$("randAll").addEventListener("click", () => randomise(Object.keys(RAND_GROUPS).filter((g) => randState.sections[g])));
+$("randUndo").addEventListener("click", () => { if (!randUndo) return; Object.assign(S, randUndo); randUndo = null; applyAll(); invalidate(); persist(); $("randUndo").disabled = true; say("Undid the last randomise."); });
+$("randReset").addEventListener("click", () => { randState.limits = {}; saveRand(); buildRandPanel(); say("Randomiser limits reset to their defaults."); });
+buildRandPanel();
+
 /* ---------------- built-in textures ---------------- */
 const builtin = { sparkle: null, pulse: null };
 async function loadAsset(url) { return decodeImage(await (await fetch(url)).arrayBuffer()); }
@@ -730,13 +981,38 @@ let cache = new Map(), cacheBytes = 0;
 const CACHE_LIMIT = 160 * 1024 * 1024;
 function resetDerived(repad) { derived = {}; if (repad && orig) prepare(); }
 
+// Space each side of the sprite needs so nothing the effects draw falls off the canvas.
+function padding() {
+  const base = Math.max(0, Math.round(S.pad)), w0 = orig.width, h0 = orig.height;
+  let l = 0, t = 0, r = 0, b = 0;
+  if (S.autoPad) {
+    if (S.pulseOn && S.outlineOn) l = t = r = b = Math.ceil(S.outlineWidth) + 1;
+    if (S.sparkOn) {
+      const unit = h0 / 100;
+      let curve = Math.max(1, 1 + (Math.max(S.sparkGrow, 0) + S.sparkGrowRand) / 100);
+      if (S.sparkCurve === "twinkle") curve *= 1 + S.sparkTwinkleAmt / 100;
+      const half = Math.max(S.sparkSizeMin, S.sparkSizeMax) * unit * curve * 0.71;
+      const up = Math.max(0, S.sparkSpeedMax, S.sparkSpeedMin) * unit * S.sparkLife;
+      const down = Math.max(0, -Math.min(S.sparkSpeedMin, S.sparkSpeedMax)) * unit * S.sparkLife;
+      let x0, x1, y0, y1;
+      if (S.sparkMode === "random") { const d = Math.max(S.sparkMinDist, S.sparkMaxDist) * unit; x0 = -d; x1 = w0 + d; y0 = -d; y1 = h0 + d; }
+      else {
+        const cx = (S.sparkX / 100) * w0, cy = h0 - (S.sparkY / 100) * h0;
+        x0 = cx - S.sparkSpreadX * unit; x1 = cx + S.sparkSpreadX * unit; y0 = cy - S.sparkSpreadY * unit; y1 = cy + S.sparkSpreadY * unit;
+      }
+      l = Math.max(l, Math.ceil(half - x0) + 1); r = Math.max(r, Math.ceil(x1 + half - w0) + 1);
+      t = Math.max(t, Math.ceil(half + up - y0) + 1); b = Math.max(b, Math.ceil(y1 + down + half - h0) + 1);
+    }
+  }
+  return { l: Math.max(0, l) + base, t: Math.max(0, t) + base, r: Math.max(0, r) + base, b: Math.max(0, b) + base };
+}
 function prepare() {
-  const pad = Math.max(0, Math.round(S.pad)), w0 = orig.width, h0 = orig.height, w = w0 + 2 * pad, h = h0 + 2 * pad, n = w * h;
+  const pd = padding(), w0 = orig.width, h0 = orig.height, w = w0 + pd.l + pd.r, h = h0 + pd.t + pd.b, n = w * h;
   const data = new Uint8ClampedArray(n * 4);
-  for (let y = 0; y < h0; y++) data.set(orig.data.subarray(y * w0 * 4, (y + 1) * w0 * 4), ((y + pad) * w + pad) * 4);
+  for (let y = 0; y < h0; y++) data.set(orig.data.subarray(y * w0 * 4, (y + 1) * w0 * 4), ((y + pd.t) * w + pd.l) * 4);
   const R = new Float32Array(n), G = new Float32Array(n), B = new Float32Array(n), A = new Float32Array(n);
   for (let p = 0, i = 0; p < n; p++, i += 4) { R[p] = data[i] / 255; G[p] = data[i + 1] / 255; B[p] = data[i + 2] / 255; A[p] = data[i + 3] / 255; }
-  src = { w, h, n, R, G, B, A, data, ox: pad, oy: pad, w0, h0 };
+  src = { w, h, n, R, G, B, A, data, ox: pd.l, oy: pd.t, w0, h0, padKey: JSON.stringify(pd) };
   derived = {};
   view.width = w; view.height = h; fitView();
 }
@@ -831,15 +1107,19 @@ function randomSpot(j) {
   }
   return best;
 }
-function getSparkTex() {
-  const img = customImg.sparkTex || builtin.sparkle;
-  if (!img) return null;
-  if (!derived.spark || derived.spark.img !== img) {
-    const { width: w, height: h, data } = img.data, t = new Float32Array(w * h * 4);
-    for (let i = 0; i < t.length; i++) t[i] = data[i] / 255;
-    derived.spark = { img, w, h, t };
-  }
-  return derived.spark;
+// Converts an ImageData into the float texture the particle renderer samples.
+function toTex(id) { const t = new Float32Array(id.data.length); for (let i = 0; i < t.length; i++) t[i] = id.data[i] / 255; return { w: id.width, h: id.height, t }; }
+let gameTex = null;
+// Weighted pick of the texture for spawn j (game sparkle and/or the user's set). tinted: apply sparkle colours?
+function sparkTexFor(j) {
+  if (!gameTex && builtin.sparkle) gameTex = toTex(builtin.sparkle.data);
+  const pool = [];
+  if (S.sparkGame && S.sparkGameWeight > 0 && gameTex) pool.push([gameTex, S.sparkGameWeight, true]);
+  for (const e of sparkSet) if (e.on && e.weight > 0 && e.tex) pool.push([e.tex, e.weight, S.sparkTintCustom]);
+  if (!pool.length) return gameTex ? { tex: gameTex, tinted: true } : null;
+  let r = rnd(j, 9) * pool.reduce((a, x) => a + x[1], 0);
+  for (const [tex, wgt, tinted] of pool) { r -= wgt; if (r < 0) return { tex, tinted }; }
+  const last = pool[pool.length - 1]; return { tex: last[0], tinted: last[2] };
 }
 
 /* ---------------- animation curves ---------------- */
@@ -922,6 +1202,45 @@ function renderFrame(t) {
   const prof = S.profile, core = S.flat / 100, blend = S.blend, useA = S.useAlpha;
   const nb = Math.max(1, Math.round(S.bands)), gap = S.spacing / 100;
   const cut = S.cutoffOn ? S.cutoff + 0.01 : -1;   // shader: clip((1 - cutoff) - (1 - a) - 0.01)
+  const shineTop = S.layerOrder !== "pulseTop", pulseHue = S.pulseHue && (m || hsv);
+  const SC = [0, 0, 0];
+  // Hue shift on any colour (pulse layer, sparkles). c: [r,g,b] 0..1, changed in place.
+  function hueApply(c) {
+    if (m) { const r0 = c[0], g0 = c[1], b0 = c[2];
+      c[0] = m[0] * r0 + m[1] * g0 + m[2] * b0; c[1] = m[3] * r0 + m[4] * g0 + m[5] * b0; c[2] = m[6] * r0 + m[7] * g0 + m[8] * b0; }
+    else if (hsv) {
+      const [hh, s, v] = rgbToHsv(clamp(c[0], 0, 1) * 255, clamp(c[1], 0, 1) * 255, clamp(c[2], 0, 1) * 255);
+      const rgb = hsvToRgb(((((hh / 360 + dh) % 1) + 1) % 1) * 360, Math.min(1, s * sat), Math.min(1, v * bri));
+      c[0] = rgb[0] / 255; c[1] = rgb[1] / 255; c[2] = rgb[2] / 255;
+    }
+  }
+  // Adds the shine band at pixel p to c (in place). al scales it when "fade with alpha" is on.
+  function shineApply(c, p, al) {
+    let wp = 0;
+    for (let j = 0; j < nb; j++) {
+      const x = 1 - Math.abs(q[p] - (loc + j * gap)) / wd;
+      if (x > 0) {
+        let y = x;
+        if (prof === "smooth") y = x * x * (3 - 2 * x);
+        else if (prof === "flat") { y = Math.min(1, x / (1 - core)); y = y * y * (3 - 2 * y); }
+        else if (prof === "hard") y = 1;
+        if (y > wp) wp = y;
+      }
+    }
+    if (wp <= 0) return;
+    let k = wp * gl * (useA ? al : 1);
+    if (mask) k *= mask[p];
+    let c0 = sc[0], c1 = sc[1], c2 = sc[2];
+    if (fill === "along" || fill === "across") {
+      const tt = fill === "along" ? sAlong[p] : clamp(0.5 + (q[p] - loc) / (2 * wd), 0, 1);
+      const li = Math.round(clamp(tt, 0, 1) * 255) * 3; c0 = lut[li]; c1 = lut[li + 1]; c2 = lut[li + 2];
+    }
+    if (blend === "add") { c[0] += c0 * k; c[1] += c1 * k; c[2] += c2 * k; }
+    else if (blend === "screen") {
+      c[0] = 1 - (1 - clamp(c[0], 0, 1)) * (1 - Math.min(1, c0 * k)); c[1] = 1 - (1 - clamp(c[1], 0, 1)) * (1 - Math.min(1, c1 * k));
+      c[2] = 1 - (1 - clamp(c[2], 0, 1)) * (1 - Math.min(1, c2 * k));
+    } else { const kk = Math.min(1, k); c[0] += (c0 - c[0]) * kk; c[1] += (c1 - c[1]) * kk; c[2] += (c2 - c[2]) * kk; }
+  }
 
   for (let p = 0, i = 0; p < n; p++, i += 4) {
     let al = A[p];
@@ -929,9 +1248,9 @@ function renderFrame(t) {
     if (outl && outl[p] && al < 1) po = (1 - al) * oa;
     if ((al <= 0 && !po) || (al < cut && !po)) { out[i] = data[i]; out[i + 1] = data[i + 1]; out[i + 2] = data[i + 2]; out[i + 3] = al < cut ? 0 : data[i + 3]; continue; }
     if (al < cut) al = 0;
-    let r = R[p], g = G[p], b = B[p];
+    const r0 = R[p], g0 = G[p], b0 = B[p];
+    let r = r0, g = g0, b = b0;
     if (m) {
-      const r0 = r, g0 = g, b0 = b;
       r = m[0] * r0 + m[1] * g0 + m[2] * b0; g = m[3] * r0 + m[4] * g0 + m[5] * b0; b = m[6] * r0 + m[7] * g0 + m[8] * b0;
     } else if (hsv) {
       let hh = (hsv.H[p] + dh) % 1; if (hh < 0) hh += 1;
@@ -941,59 +1260,31 @@ function renderFrame(t) {
       if (ci === 0) { r = v; g = T; b = P; } else if (ci === 1) { r = Qv; g = v; b = P; } else if (ci === 2) { r = P; g = v; b = T; }
       else if (ci === 3) { r = P; g = Qv; b = v; } else if (ci === 4) { r = T; g = P; b = v; } else { r = v; g = P; b = Qv; }
     }
+    const hr = r, hg = g, hb = b;                  // hue-shifted colour, before any shine
+    if (shine && al > 0 && !shineTop) { SC[0] = r; SC[1] = g; SC[2] = b; shineApply(SC, p, al); r = SC[0]; g = SC[1]; b = SC[2]; }
     let outA = al;
     if (pk) {
       // pulse layer: sprite * tint + glow texture * glow colour, plus outline outside the sprite
-      let pr = r * tint[0], pg = g * tint[1], pb = b * tint[2];
+      const pb0 = pulseHue ? [r0, g0, b0] : [hr, hg, hb];
+      let pr = pb0[0] * tint[0], pg = pb0[1] * tint[1], pb = pb0[2] * tint[2];
       if (gtex) { const ga = gtex[i + 3] * al; pr += gtex[i] * ga * gcol[0]; pg += gtex[i + 1] * ga * gcol[1]; pb += gtex[i + 2] * ga * gcol[2]; }
       else if (gflat) { pr += al * gcol[0]; pg += al * gcol[1]; pb += al * gcol[2]; }
       let pa = al;
       if (po) { const k = po / Math.max(1e-6, al + po); pr += (ocol[0] - pr) * k; pg += (ocol[1] - pg) * k; pb += (ocol[2] - pb) * k; pa = Math.min(1, al + po); }
+      if (pulseHue) { SC[0] = pr; SC[1] = pg; SC[2] = pb; hueApply(SC); pr = SC[0]; pg = SC[1]; pb = SC[2]; }
       // overlay the pulse layer (opacity pk) over the base (straight-alpha "over")
       const fa = pa * pk, ba = al * (1 - fa), oa2 = fa + ba;
       if (oa2 > 0) { r = (pr * fa + r * ba) / oa2; g = (pg * fa + g * ba) / oa2; b = (pb * fa + b * ba) / oa2; }
       outA = oa2;
     }
-    if (shine && al > 0) {
-      let wp = 0;
-      for (let j = 0; j < nb; j++) {
-        const x = 1 - Math.abs(q[p] - (loc + j * gap)) / wd;
-        if (x > 0) {
-          let y = x;
-          if (prof === "smooth") y = x * x * (3 - 2 * x);
-          else if (prof === "flat") { y = Math.min(1, x / (1 - core)); y = y * y * (3 - 2 * y); }
-          else if (prof === "hard") y = 1;
-          if (y > wp) wp = y;
-        }
-      }
-      if (wp > 0) {
-        let k = wp * gl * (useA ? al : 1);
-        if (mask) k *= mask[p];
-        let c0 = sc[0], c1 = sc[1], c2 = sc[2];
-        if (fill === "along" || fill === "across") {
-          const tt = fill === "along" ? sAlong[p] : clamp(0.5 + (q[p] - loc) / (2 * wd), 0, 1);
-          const li = Math.round(clamp(tt, 0, 1) * 255) * 3; c0 = lut[li]; c1 = lut[li + 1]; c2 = lut[li + 2];
-        }
-        if (blend === "add") { r += c0 * k; g += c1 * k; b += c2 * k; }
-        else if (blend === "screen") {
-          r = 1 - (1 - clamp(r, 0, 1)) * (1 - Math.min(1, c0 * k)); g = 1 - (1 - clamp(g, 0, 1)) * (1 - Math.min(1, c1 * k)); b = 1 - (1 - clamp(b, 0, 1)) * (1 - Math.min(1, c2 * k));
-        } else { const kk = Math.min(1, k); r += (c0 - r) * kk; g += (c1 - g) * kk; b += (c2 - b) * kk; }
-      }
-    }
+    if (shine && al > 0 && shineTop) { SC[0] = r; SC[1] = g; SC[2] = b; shineApply(SC, p, al); r = SC[0]; g = SC[1]; b = SC[2]; }
     out[i] = r * 255 + 0.5; out[i + 1] = g * 255 + 0.5; out[i + 2] = b * 255 + 0.5;
     out[i + 3] = outA === al && !pk ? data[i + 3] : outA * 255 + 0.5;
   }
   // Optional: run the frame's effects on sparkle pixels too (off in the game).
   let sfx = null;
   if (S.sparkOn && (S.sparkHue || S.sparkShine || S.sparkPulse)) sfx = (p, c) => {
-    if (S.sparkHue && m) {
-      const r0 = c[0], g0 = c[1], b0 = c[2];
-      c[0] = m[0] * r0 + m[1] * g0 + m[2] * b0; c[1] = m[3] * r0 + m[4] * g0 + m[5] * b0; c[2] = m[6] * r0 + m[7] * g0 + m[8] * b0;
-    } else if (S.sparkHue && hsv) {
-      let [hh, s, v] = rgbToHsv(c[0] * 255, c[1] * 255, c[2] * 255);
-      const rgb = hsvToRgb((((hh / 360 + dh) % 1) + 1) % 1 * 360, Math.min(1, s * sat), Math.min(1, v * bri));
-      c[0] = rgb[0] / 255; c[1] = rgb[1] / 255; c[2] = rgb[2] / 255;
-    }
+    if (S.sparkHue) hueApply(c);
     if (S.sparkPulse && pk) {
       const i = p * 4;
       let pr = c[0] * tint[0], pg = c[1] * tint[1], pb = c[2] * tint[2];
@@ -1001,27 +1292,7 @@ function renderFrame(t) {
       else if (S.pulseGlowOn) { pr += gcol[0]; pg += gcol[1]; pb += gcol[2]; }
       c[0] += (pr - c[0]) * pk; c[1] += (pg - c[1]) * pk; c[2] += (pb - c[2]) * pk;
     }
-    if (S.sparkShine && shine) {
-      let wp = 0;
-      for (let j = 0; j < nb; j++) {
-        const x = 1 - Math.abs(q[p] - (loc + j * gap)) / wd;
-        if (x > 0) { let y = x;
-          if (prof === "smooth") y = x * x * (3 - 2 * x);
-          else if (prof === "flat") { y = Math.min(1, x / (1 - core)); y = y * y * (3 - 2 * y); }
-          else if (prof === "hard") y = 1;
-          if (y > wp) wp = y; }
-      }
-      if (wp > 0) {
-        const k = wp * gl; let c0 = sc[0], c1 = sc[1], c2 = sc[2];
-        if (fill === "along" || fill === "across") {
-          const tt = fill === "along" ? sAlong[p] : clamp(0.5 + (q[p] - loc) / (2 * wd), 0, 1);
-          const li = Math.round(clamp(tt, 0, 1) * 255) * 3; c0 = lut[li]; c1 = lut[li + 1]; c2 = lut[li + 2];
-        }
-        if (blend === "add") { c[0] += c0 * k; c[1] += c1 * k; c[2] += c2 * k; }
-        else if (blend === "screen") for (let z = 0; z < 3; z++) c[z] = 1 - (1 - clamp(c[z], 0, 1)) * (1 - Math.min(1, [c0, c1, c2][z] * k));
-        else { const kk = Math.min(1, k); c[0] += (c0 - c[0]) * kk; c[1] += (c1 - c[1]) * kk; c[2] += (c2 - c[2]) * kk; }
-      }
-    }
+    if (S.sparkShine && shine) shineApply(c, p, 1);
   };
   drawSparkles(out, ph * S.loop, sfx);
   return new ImageData(out, w, h);
@@ -1029,7 +1300,7 @@ function renderFrame(t) {
 // Particles: textured, rotated quads alpha-blended over the frame (bilinear sampling).
 function drawSparkles(out, t, sfx) {
   const list = sparklesAt(t); if (!list.length) return;
-  const tex = getSparkTex(); if (!tex) return;
+  if (!sparkTexFor(0)) return;
   const { w, h, ox, oy, h0, w0 } = src, unit = h0 / 100;     // % of sprite height
   const lut = gradLUT(S.sparkGrad);
   for (const { j, age, life } of list) {
@@ -1048,19 +1319,22 @@ function drawSparkles(out, t, sfx) {
     }
     const spin = S.sparkSpin + (rnd(j, 6) * 2 - 1) * S.sparkSpinRand;
     const rot = (S.sparkRot ? rnd(j, 4) * 2 * Math.PI : 0) + (spin * Math.PI / 180) * age;
-    const ci = Math.round(rnd(j, 5) * 255) * 3, col = [lut[ci], lut[ci + 1], lut[ci + 2]];
+    const pick = sparkTexFor(j), tex = pick.tex;
+    const ci = Math.round(rnd(j, 5) * 255) * 3, col = pick.tinted ? [lut[ci], lut[ci + 1], lut[ci + 2]] : [1, 1, 1];
     const fi = S.sparkFadeIn / 100, fo = S.sparkFadeOut / 100;
     let op = S.sparkOpacity / 100;
     if (fi > 0 && lf < fi) op *= lf / fi;
     if (fo > 0 && lf > 1 - fo) op *= (1 - lf) / fo;
     if (op <= 0 || size < 0.5) continue;
+    // size = the image's longest side; keep its aspect ratio
+    const sx = size * (tex.w / Math.max(tex.w, tex.h)), sy = size * (tex.h / Math.max(tex.w, tex.h));
     const cs = Math.cos(rot), sn = Math.sin(rot), half = size * 0.71;
     const x0 = Math.max(0, Math.floor(cx - half)), x1 = Math.min(w - 1, Math.ceil(cx + half));
     const y0 = Math.max(0, Math.floor(cy - half)), y1 = Math.min(h - 1, Math.ceil(cy + half));
     const tw = tex.w, th = tex.h, T = tex.t;
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
       const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
-      const u = (dx * cs + dy * sn) / size + 0.5, v = (-dx * sn + dy * cs) / size + 0.5;
+      const u = (dx * cs + dy * sn) / sx + 0.5, v = (-dx * sn + dy * cs) / sy + 0.5;
       if (u < 0 || v < 0 || u >= 1 || v >= 1) continue;
       const fx = u * tw - 0.5, fy = v * th - 0.5, ix = Math.floor(fx), iy = Math.floor(fy), ax = fx - ix, ay = fy - iy;
       let sr = 0, sg = 0, sb = 0, sa = 0;
@@ -1090,7 +1364,10 @@ function frameImage(i) {
 
 /* ---------------- preview ---------------- */
 let playing = true, playStart = performance.now(), pausedAt = 0, lastShown = -1, holdOriginal = false, dirty = true;
-function invalidate() { cache.clear(); cacheBytes = 0; dirty = true; $("scrub").max = String(S.loop); }
+function invalidate() {
+  if (orig && src && JSON.stringify(padding()) !== src.padKey) prepare();   // canvas size follows the effects
+  cache.clear(); cacheBytes = 0; dirty = true; $("scrub").max = String(S.loop);
+}
 function currentTime() { return playing ? (((performance.now() - playStart) / 1000) % S.loop) : Math.min(pausedAt, S.loop); }
 function draw() {
   requestAnimationFrame(draw);
@@ -1190,14 +1467,32 @@ if (!PP) $("grab").title = "Only works when this page is opened as a Photopea pl
 function sendToPhotopea(bytes) { window.parent.postMessage(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), "*"); }
 
 /* ---------------- output helpers ---------------- */
-function finishFrame(im) {                         // export upscale (nearest neighbour) + optional matte
-  const sc = Math.max(1, Math.round(S.scale)), { width: w, height: h, data } = im;
+// Export crop: the smallest box holding every visible pixel of every frame (or the whole canvas).
+let exportBox = null;
+async function computeBox() {
+  if (!S.trim) return { x: 0, y: 0, w: src.w, h: src.h };
+  const n = frameCount(), { w, h } = src;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let i = 0; i < n; i++) {
+    if (i % 8 === 0) { say(`Measuring frames ${i + 1}/${n}…`); await tick(); }
+    const d = frameImage(i).data;
+    for (let y = 0; y < h; y++) {
+      let row = y * w * 4;
+      for (let x = 0; x < w; x++) if (d[row + x * 4 + 3]) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+  }
+  if (x1 < 0) return { x: 0, y: 0, w: 1, h: 1 };
+  return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+function finishFrame(im) {                         // crop + export upscale (nearest neighbour) + optional matte
+  const sc = Math.max(1, Math.round(S.scale)), { width: fullW, data } = im;
+  const bx = exportBox || { x: 0, y: 0, w: im.width, h: im.height }, w = bx.w, h = bx.h;
   const W = w * sc, H = h * sc, out = new Uint8ClampedArray(W * H * 4);
   const matte = S.matte === "color" ? hexRgb(S.matteColor) : null;
   for (let y = 0; y < H; y++) {
     const sy = (y / sc) | 0;
     for (let x = 0; x < W; x++) {
-      const si = (sy * w + ((x / sc) | 0)) * 4, di = (y * W + x) * 4;
+      const si = ((sy + bx.y) * fullW + ((x / sc) | 0) + bx.x) * 4, di = (y * W + x) * 4;
       if (matte) {
         const a = data[si + 3] / 255;
         out[di] = data[si] * a + matte[0] * (1 - a) + 0.5; out[di + 1] = data[si + 1] * a + matte[1] * (1 - a) + 0.5;
@@ -1217,7 +1512,7 @@ let busy = false, lastGif = null;
 async function job(name, fn) {
   if (busy || !src) return; busy = true;
   document.querySelectorAll(".exports button").forEach((b) => (b.disabled = true));
-  try { await fn(); } catch (e) { console.error(e); say(`${name} failed: ${e.message}`); }
+  try { exportBox = await computeBox(); await fn(); } catch (e) { console.error(e); say(`${name} failed: ${e.message}`); }
   busy = false;
   document.querySelectorAll(".exports button").forEach((b) => (b.disabled = !src));
   $("xPP").disabled = !PP;
@@ -1227,7 +1522,7 @@ function download(blob, name) {
   if (a.href) URL.revokeObjectURL(a.href);
   a.href = URL.createObjectURL(blob); a.download = name; a.click();
 }
-const baseName = () => `shiny_${src.w * Math.max(1, Math.round(S.scale))}x${src.h * Math.max(1, Math.round(S.scale))}`;
+const baseName = () => { const b = exportBox || src, sc = Math.max(1, Math.round(S.scale)); return `shiny_${b.w * sc}x${b.h * sc}`; };
 
 async function encodeGif() {
   const { GIFEncoder, quantize, applyPalette } = gifenc;
@@ -1302,7 +1597,7 @@ $("xStill").addEventListener("click", () => job("PNG", async () => {
   say(`Saved frame ${i + 1}/${n}. Pause and scrub to pick a different one.`);
 }));
 $("xSheet").addEventListener("click", () => job("Sprite sheet", async () => {
-  const n = frameCount(), sc = Math.max(1, Math.round(S.scale)), fw = src.w * sc, fh = src.h * sc;
+  const n = frameCount(), sc = Math.max(1, Math.round(S.scale)), fw = exportBox.w * sc, fh = exportBox.h * sc;
   const cols = S.sheetCols > 0 ? Math.min(n, S.sheetCols) : Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols);
   if (fw * cols * fh * rows > 16384 * 16384) throw new Error("sheet would be too large; lower the upscale or frame rate");
   const W = fw * cols, data = new Uint8ClampedArray(W * fh * rows * 4);
@@ -1340,7 +1635,7 @@ $("xPP").disabled = !PP;
 if (!PP) $("xPP").title = "Only works when this page is opened as a Photopea plugin";
 
 // Test hook: lets automated checks render a frame at an exact time.
-window.__shiny = { S, GAME, load: loadBuffer, render: (t) => renderFrame(t), get src() { return src; }, invalidate, loadPreset, get ready() { return !!builtin.sparkle; } };
+window.__shiny = { S, GAME, load: loadBuffer, render: (t) => renderFrame(t), get src() { return src; }, invalidate, loadPreset, randomise, addSparkFiles, sparkSet, get ready() { return !!builtin.sparkle; } };
 </script>
 </body>
 </html>
