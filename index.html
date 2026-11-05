@@ -105,8 +105,9 @@
   <main>
     <div class="row" style="margin-bottom:8px">
       <button id="grab" class="primary" title="Imports what's visible in the active Photopea document">Get from Photopea</button>
+      <button id="grabAnim" title="Imports the active Photopea document's animation frames as a GIF">Get animation</button>
       <label class="btn">Open image…<input type="file" id="file" accept="image/*" hidden></label>
-      <span class="note">or drop / paste an image</span>
+      <span class="note">or drop / paste any image or animated GIF, APNG or WebP</span>
     </div>
     <div class="stage checker" id="stage">
       <canvas id="view" width="1" height="1"></canvas>
@@ -235,7 +236,10 @@ const GAME = {
   // timing / alpha / canvas
   loop: 2.2, fps: 24, scaleTiming: true, cutoffOn: false, cutoff: 0.25, pad: 0, autoPad: true,
   // export
-  scale: 1, trim: true, matte: "none", matteColor: "#1b4f8a", sheetCols: 0, gifAlpha: 50,
+  scale: 1, trim: true, matte: "none",
+  // animated sources (GIF / APNG / animated WebP)
+  animSync: "fit", animMaxDrift: 10, animMaxRepeats: 8, animCycles: 1, animRepeats: 1, animSpeed: 100,
+  animPlay: "forward", animStart: 0, animShinyOffset: 0, animFrames: "smooth", animSparkUnique: true, matteColor: "#1b4f8a", sheetCols: 0, gifAlpha: 50,
 };
 const BUILTIN = {
   "Shiny: battle (game default)": {},
@@ -272,6 +276,21 @@ const GRAD_PRESETS = {
 
 // [type, key, label, ...]   range: min,max,step,unit,decimals
 const SECTIONS = [
+  ["Animation", null, true, [
+    ["info", "animInfo", ""],
+    ["select", "animSync", "Keep in sync by", [["fit", "Fitting the shiny effect to the animation"], ["repeat", "Repeating the animation (shiny at game speed)"],
+      ["speed", "Changing the animation's speed (shiny at game speed)"], ["manual", "Manual"]]],
+    ["range", "animMaxDrift", "Max shiny speed change", 1, 50, 1, "%", 0],
+    ["range", "animMaxRepeats", "Max repeats", 1, 30, 1, "", 0],
+    ["range", "animCycles", "Shiny cycles", 1, 30, 1, "", 0],
+    ["range", "animRepeats", "Animation repeats", 1, 30, 1, "", 0],
+    ["range", "animSpeed", "Animation speed", 10, 400, 1, "%", 0],
+    ["select", "animPlay", "Playback", [["forward", "Forward (original)"], ["reverse", "Reverse"], ["pingpong", "Ping-pong"]]],
+    ["range", "animStart", "Start at frame", 0, 1, 1, "", 0],
+    ["range", "animShinyOffset", "Shiny offset", 0, 100, 1, "%", 0],
+    ["select", "animFrames", "Output frames", [["smooth", "Smooth: original frames + frame-rate ticks"], ["original", "Original frames only (smaller file)"]]],
+    ["check", "animSparkUnique", "Different sparkles in every shiny cycle"],
+  ]],
   ["Shiny colours", "hueOn", true, [
     ["select", "hueMode", "Animation", [["spin", "Spin round the wheel (game)"], ["pingpong", "Ping-pong between two hues"], ["static", "Fixed shift"]]],
     ["select", "hueAlgo", "Colour maths", [["game", "Game shader matrix (exact)"], ["hsv", "True HSV rotation"]]],
@@ -385,7 +404,8 @@ const HINTS = {
   "Shine": "The dial sets the side the band comes from: drag the handle, Shift snaps to 15°, double-click resets to the game. Positions: 1 is the start corner, 0 the opposite one.",
   "Pulsing": "Game pulsing draws a green-tinted, glowing, outlined copy over the sprite and fades it in and out. The game outline is 9.5 px on full-size Morty art (about 2% of its height); use less on small or pixel-art sprites.",
   "Sparkles": "Game sparkles appear only in the overworld. Sizes and distances are % of the sprite's height. In the game each sparkle keeps its size and rotation for its whole life; the next one gets a new random angle and size, and some drift upward. Randomised placement drops sparkles anywhere whose centre is between the min and max distance from the body's edge (0 = on the body). The canvas grows automatically so sparkles never get cut off (Alpha & canvas).",
-  "Timing": "Hue turns, shines, pulses and sparkles all repeat a whole number of times per loop, so every export loops seamlessly.",
+  "Timing": "Hue turns, shines, pulses and sparkles all repeat a whole number of times per loop, so every export loops seamlessly. With an animated image, Loop length is one shiny cycle and the Animation section decides how many fit.",
+  "Animation": "The animation keeps its own frames and timing; the shiny effects are drawn over every frame, following each frame's shape. Smooth output adds in-between frames at the Timing frame rate so the shine moves smoothly, while every original frame is still held for its original time.",
 };
 
 /* ---------------- randomiser limits ----------------
@@ -525,6 +545,7 @@ function swatchButton(get, set) {
 
 /* ---------------- controls ---------------- */
 const widgets = {};
+let orig = null;         // loaded image: { w0, h0, frames: [ImageData], delays: [ms], animated }
 const customImg = { mask: null, glowTex: null };
 const sparkSet = [];   // user sparkle images: { name, url (PNG data URL), weight, on, tex }
 const customName = { mask: "", glowTex: "" };
@@ -639,6 +660,9 @@ function makeControl(d, host) {
       b.addEventListener("click", () => syncAction(id)); row.children[1].appendChild(b);
     }
     widgets[key] = { row, set() {}, noPreset: true };
+  } else if (type === "info") {
+    row.className = "note"; row.style.margin = "2px 0 6px"; row.style.lineHeight = "1.5";
+    widgets[key] = { row, set() { row.innerHTML = animInfoHtml(); }, noPreset: true };
   } else if (type === "sparkset") {
     row.className = "";
     row.innerHTML = `<div class="ctl wide"><span>${label}</span><span class="row"><button class="small add">Add images…</button><button class="small clr">Remove all</button></span></div>
@@ -754,6 +778,12 @@ function syncVisibility() {
   show("color", S.shineFill === "solid"); show("shineGrad", S.shineFill !== "solid");
   for (const k of ["pulseGlow", "glowColor", "glowTex"]) show(k, S.pulseGlowOn);
   for (const k of ["outlineColor", "outlineAlpha", "outlineWidth", "outlineGlow", "outline8"]) show(k, S.outlineOn);
+  const am = S.animSync, isAnim = !!(orig && orig.animated);
+  if (sectionEls.Animation) sectionEls.Animation.hidden = !isAnim;
+  show("animMaxDrift", am === "fit"); show("animMaxRepeats", am !== "manual");
+  show("animCycles", am === "manual"); show("animRepeats", am === "manual");
+  if (widgets.loop) widgets.loop.row.querySelector("span").textContent = isAnim ? "Shiny cycle" : "Loop length";
+  if (widgets.animInfo) widgets.animInfo.set();
   const sg = S.sparkMode === "game";
   for (const k of ["sparkX", "sparkY", "sparkSpreadX", "sparkSpreadY"]) show(k, sg);
   show("sparkMinDist", !sg); show("sparkMaxDist", !sg);
@@ -800,7 +830,9 @@ function loadPreset(id) {
   const [kind, name] = [id.slice(0, 2), id.slice(2)];
   const p = kind === "b:" ? BUILTIN[name] : userPresets[name];
   if (!p) return;
-  Object.assign(S, structuredClone(GAME), structuredClone(clean(p)));
+  const keep = {};
+  for (const k in GAME) if (k.startsWith("anim") || ["scale", "trim", "matte", "matteColor", "sheetCols", "gifAlpha"].includes(k)) keep[k] = structuredClone(S[k]);
+  Object.assign(S, structuredClone(GAME), structuredClone(clean(p)), keep);
   for (const [title, key] of SECTIONS) if (key && sectionEls[title]) sectionEls[title].open = !!S[key] || title === "Shine" && S.shineOn;
   applyAll(); invalidate(); persist(id); $("preset").value = id;
 }
@@ -974,7 +1006,6 @@ Promise.all([loadAsset(ASSET_SPARKLE), loadAsset(ASSET_PULSE)]).then(([s, p]) =>
   .catch((e) => say("Couldn't load the built-in textures: " + e.message));
 
 /* ---------------- image state ---------------- */
-let orig = null;         // ImageData as loaded
 let src = null;          // padded working copy: { w, h, n, R, G, B, A, data, ox, oy, w0, h0 }
 let derived = {};        // per-sprite caches (q, mask, glow, outline, sparkle texture)
 let cache = new Map(), cacheBytes = 0;
@@ -983,7 +1014,7 @@ function resetDerived(repad) { derived = {}; if (repad && orig) prepare(); }
 
 // Space each side of the sprite needs so nothing the effects draw falls off the canvas.
 function padding() {
-  const base = Math.max(0, Math.round(S.pad)), w0 = orig.width, h0 = orig.height;
+  const base = Math.max(0, Math.round(S.pad)), w0 = orig.w0, h0 = orig.h0;
   let l = 0, t = 0, r = 0, b = 0;
   if (S.autoPad) {
     if (S.pulseOn && S.outlineOn) l = t = r = b = Math.ceil(S.outlineWidth) + 1;
@@ -1006,26 +1037,45 @@ function padding() {
   }
   return { l: Math.max(0, l) + base, t: Math.max(0, t) + base, r: Math.max(0, r) + base, b: Math.max(0, b) + base };
 }
+// orig: { w0, h0, frames: [ImageData], delays: [ms], animated }. src holds the padded frames.
 function prepare() {
-  const pd = padding(), w0 = orig.width, h0 = orig.height, w = w0 + pd.l + pd.r, h = h0 + pd.t + pd.b, n = w * h;
-  const data = new Uint8ClampedArray(n * 4);
-  for (let y = 0; y < h0; y++) data.set(orig.data.subarray(y * w0 * 4, (y + 1) * w0 * 4), ((y + pd.t) * w + pd.l) * 4);
-  const R = new Float32Array(n), G = new Float32Array(n), B = new Float32Array(n), A = new Float32Array(n);
-  for (let p = 0, i = 0; p < n; p++, i += 4) { R[p] = data[i] / 255; G[p] = data[i + 1] / 255; B[p] = data[i + 2] / 255; A[p] = data[i + 3] / 255; }
-  src = { w, h, n, R, G, B, A, data, ox: pd.l, oy: pd.t, w0, h0, padKey: JSON.stringify(pd) };
-  derived = {};
+  const pd = padding(), w0 = orig.w0, h0 = orig.h0, w = w0 + pd.l + pd.r, h = h0 + pd.t + pd.b, n = w * h;
+  const frames = orig.frames.map((im) => {
+    const data = new Uint8ClampedArray(n * 4);
+    for (let y = 0; y < h0; y++) data.set(im.data.subarray(y * w0 * 4, (y + 1) * w0 * 4), ((y + pd.t) * w + pd.l) * 4);
+    return data;
+  });
+  const unionA = new Float32Array(n);             // the most opaque each pixel ever gets, over all frames
+  for (const d of frames) for (let p = 0; p < n; p++) { const a = d[p * 4 + 3] / 255; if (a > unionA[p]) unionA[p] = a; }
+  src = { w, h, n, frames, unionA, data: frames[0], fa: new Map(), ox: pd.l, oy: pd.t, w0, h0, padKey: JSON.stringify(pd) };
+  derived = {}; tlCache = null;
   view.width = w; view.height = h; fitView();
 }
-function hsvArrays() {
-  if (derived.hsv) return derived.hsv;
-  const { n, R, G, B } = src, H = new Float32Array(n), Sv = new Float32Array(n), V = new Float32Array(n);
+// Float channels for source frame fi (small cache: animations can have hundreds of frames).
+function frameArrays(fi) {
+  let e = src.fa.get(fi);
+  if (e) return e;
+  const data = src.frames[fi], n = src.n;
+  const R = new Float32Array(n), G = new Float32Array(n), B = new Float32Array(n), A = new Float32Array(n);
+  for (let p = 0, i = 0; p < n; p++, i += 4) { R[p] = data[i] / 255; G[p] = data[i + 1] / 255; B[p] = data[i + 2] / 255; A[p] = data[i + 3] / 255; }
+  e = { R, G, B, A, data };
+  if (src.fa.size >= 12) src.fa.delete(src.fa.keys().next().value);
+  src.fa.set(fi, e);
+  return e;
+}
+function hsvArrays(fi) {
+  derived.hsv ||= new Map();
+  if (derived.hsv.has(fi)) return derived.hsv.get(fi);
+  if (derived.hsv.size >= 12) derived.hsv.delete(derived.hsv.keys().next().value);
+  const { n } = src, { R, G, B } = frameArrays(fi), H = new Float32Array(n), Sv = new Float32Array(n), V = new Float32Array(n);
   for (let p = 0; p < n; p++) {
     const r = R[p], g = G[p], b = B[p], mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
     let hh = 0;
     if (d) { hh = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; hh /= 6; if (hh < 0) hh += 1; }
     H[p] = hh; Sv[p] = mx ? d / mx : 0; V[p] = mx;
   }
-  return (derived.hsv = { H, Sv, V });
+  const res = { H, Sv, V }; derived.hsv.set(fi, res);
+  return res;
 }
 // Shine axis. q: 0..1 across the sprite's UV rect, 1 = the side the band comes from.
 // For the game direction q is exactly the shader's (u+v)/2 (v running top→bottom on screen).
@@ -1068,10 +1118,11 @@ function getGlowTex() {
   return derived.glow.t;
 }
 // AllIn1 OUTBASE: alpha sampled at ±width texels in 4 (or 8) directions; outline where any > 0.05.
-function getOutline() {
+function getOutline(fi) {
   const key = `${S.outlineWidth}|${S.outline8}`;
-  if (derived.outline && derived.outline.key === key) return derived.outline.m;
-  const { w, h, A } = src, d = S.outlineWidth, m = new Uint8Array(w * h);
+  if (!derived.outline || derived.outline.key !== key) derived.outline = { key, map: new Map() };
+  if (derived.outline.map.has(fi)) return derived.outline.map.get(fi);
+  const { w, h } = src, { A } = frameArrays(fi), d = S.outlineWidth, m = new Uint8Array(w * h);
   const dirs = [[d, 0], [-d, 0], [0, d], [0, -d]];
   if (S.outline8) { const e = d * Math.SQRT1_2; dirs.push([e, e], [-e, e], [e, -e], [-e, -e]); }
   const at = (x, y) => { const xi = Math.round(x), yi = Math.round(y); return xi < 0 || yi < 0 || xi >= w || yi >= h ? 0 : A[yi * w + xi]; };
@@ -1079,13 +1130,13 @@ function getOutline() {
     let sum = 0; for (const [ax, ay] of dirs) sum += at(x + ax, y + ay);
     m[y * w + x] = Math.min(1, sum) >= 0.05 ? 1 : 0;
   }
-  derived.outline = { key, m };
+  derived.outline.map.set(fi, m);
   return m;
 }
 // Distance (px) from each pixel to the nearest solid sprite pixel (alpha ≥ 0.5); 0 on the body. Chamfer 3-4.
 function getDist() {
   if (derived.dist) return derived.dist;
-  const { w, h, A } = src, INF = 1e9, d = new Float32Array(w * h);
+  const { w, h } = src, A = src.unionA, INF = 1e9, d = new Float32Array(w * h);
   for (let p = 0; p < w * h; p++) d[p] = A[p] >= 0.5 ? 0 : INF;
   const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? INF : d[y * w + x]);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const p = y * w + x; if (d[p])
@@ -1154,9 +1205,9 @@ function pulseAt(ph) {                             // 0..1 overlay strength, or 
 // Seeded random per (seed, spawn index, channel): spawns repeat identically every loop.
 function rnd(i, c) { let x = (Math.imul(S.sparkSeed * 7919 + 17, 0x9e3779b1) ^ Math.imul(i + 1, 0x85ebca6b) ^ Math.imul(c + 3, 0xc2b2ae35)) >>> 0;
   x ^= x >>> 16; x = Math.imul(x, 0x7feb352d); x ^= x >>> 15; x = Math.imul(x, 0x846ca68b); x ^= x >>> 16; return (x >>> 0) / 4294967296; }
-function sparklesAt(t) {
+function sparklesAt(t, loopLen = S.loop) {
   if (!S.sparkOn) return [];
-  const N = Math.max(1, Math.round(S.loop * S.sparkRate)), gap = S.loop / N, life = S.sparkLife, out = [];
+  const N = Math.max(1, Math.round(loopLen * S.sparkRate)), gap = loopLen / N, life = S.sparkLife, out = [];
   const maxBack = Math.ceil(life / gap) + 1;
   for (let b = 0; b <= maxBack && out.length < 64; b++) {
     const idx = Math.floor(t / gap) - b, born = idx * gap, age = t - born;
@@ -1170,10 +1221,13 @@ function sparklesAt(t) {
 }
 
 /* ---------------- the effect ---------------- */
-function renderFrame(t) {
-  const { w, h, n, R, G, B, A, data } = src;
+// t: output time (s). tAnim: when to sample the animation (defaults to t).
+function renderFrame(t, tAnim = t) {
+  const tl = timeline(), fi = tl.anim ? animFrameAt(tAnim) : 0;
+  const { w, h, n } = src, { R, G, B, A, data } = frameArrays(fi);
   const out = new Uint8ClampedArray(n * 4);
-  const ph = S.loop > 0 ? (((t / S.loop) % 1) + 1) % 1 : 0;
+  const te = t / tl.k;                                   // effect time: c shiny cycles fit exactly in one output loop
+  const ph = S.loop > 0 ? ((((te / S.loop) + (tl.anim ? S.animShinyOffset / 100 : 0)) % 1) + 1) % 1 : 0;
   const theta = hueAt(ph), sh = shineAt(ph * S.loop), pulse = pulseAt(ph);
   const sat = S.sat / 100, bri = S.bright / 100;
 
@@ -1183,13 +1237,13 @@ function renderFrame(t) {
     m = [.299 * bri + .701 * c + .168 * s, .587 * bri - .587 * c + .330 * s, .114 * bri - .114 * c - .497 * s,
          .299 * bri - .299 * c - .328 * s, .587 * bri + .413 * c + .035 * s, .114 * bri - .114 * c + .292 * s,
          .299 * bri - .300 * c + 1.25 * s, .587 * bri - .588 * c - 1.05 * s, .114 * bri + .886 * c - .203 * s];
-  } else if (theta !== null) { hsv = hsvArrays(); dh = -theta / 360; }
+  } else if (theta !== null) { hsv = hsvArrays(fi); dh = -theta / 360; }
 
   // pulse overlay setup
   const pk = pulse !== null && pulse > 0 ? pulse : 0;
   const tint = hexRgb(S.tint).map((v) => v / 255), gcol = hexRgb(S.glowColor).map((v) => (v / 255) * S.pulseGlow);
   const gtex = pk && S.pulseGlowOn ? getGlowTex() : null, gflat = pk && S.pulseGlowOn && !gtex;
-  const outl = pk && S.outlineOn ? getOutline() : null, oa = S.outlineAlpha / 100;
+  const outl = pk && S.outlineOn ? getOutline(fi) : null, oa = S.outlineAlpha / 100;
   const ocol = hexRgb(S.outlineColor).map((v) => Math.min(1, (v / 255) * S.outlineGlow));
 
   // shine setup
@@ -1278,8 +1332,8 @@ function renderFrame(t) {
       outA = oa2;
     }
     if (shine && al > 0 && shineTop) { SC[0] = r; SC[1] = g; SC[2] = b; shineApply(SC, p, al); r = SC[0]; g = SC[1]; b = SC[2]; }
-    out[i] = r * 255 + 0.5; out[i + 1] = g * 255 + 0.5; out[i + 2] = b * 255 + 0.5;
-    out[i + 3] = outA === al && !pk ? data[i + 3] : outA * 255 + 0.5;
+    out[i] = r * 255; out[i + 1] = g * 255; out[i + 2] = b * 255;           // Uint8ClampedArray rounds
+    out[i + 3] = outA === al && !pk ? data[i + 3] : outA * 255;
   }
   // Optional: run the frame's effects on sparkle pixels too (off in the game).
   let sfx = null;
@@ -1294,12 +1348,13 @@ function renderFrame(t) {
     }
     if (S.sparkShine && shine) shineApply(c, p, 1);
   };
-  drawSparkles(out, ph * S.loop, sfx);
+  if (tl.anim && S.animSparkUnique) { const Le = tl.c * S.loop; drawSparkles(out, ((te % Le) + Le) % Le, sfx, Le); }
+  else drawSparkles(out, ph * S.loop, sfx, S.loop);
   return new ImageData(out, w, h);
 }
 // Particles: textured, rotated quads alpha-blended over the frame (bilinear sampling).
-function drawSparkles(out, t, sfx) {
-  const list = sparklesAt(t); if (!list.length) return;
+function drawSparkles(out, t, sfx, loopLen) {
+  const list = sparklesAt(t, loopLen); if (!list.length) return;
   if (!sparkTexFor(0)) return;
   const { w, h, ox, oy, h0, w0 } = src, unit = h0 / 100;     // % of sprite height
   const lut = gradLUT(S.sparkGrad);
@@ -1349,37 +1404,126 @@ function drawSparkles(out, t, sfx) {
       let fr = (sr / sa) * col[0] * 255, fg = (sg / sa) * col[1] * 255, fb = (sb / sa) * col[2] * 255;
       if (sfx) { const c = [fr / 255, fg / 255, fb / 255]; sfx(y * w + x, c); fr = clamp(c[0], 0, 1) * 255; fg = clamp(c[1], 0, 1) * 255; fb = clamp(c[2], 0, 1) * 255; }
       out[pi] = (fr * fa + out[pi] * da * (1 - fa)) / oa; out[pi + 1] = (fg * fa + out[pi + 1] * da * (1 - fa)) / oa;
-      out[pi + 2] = (fb * fa + out[pi + 2] * da * (1 - fa)) / oa; out[pi + 3] = oa * 255 + 0.5;
+      out[pi + 2] = (fb * fa + out[pi + 2] * da * (1 - fa)) / oa; out[pi + 3] = oa * 255;
     }
   }
 }
 function frameImage(i) {
   let im = cache.get(i);
   if (im) return im;
-  im = renderFrame((i * S.loop) / frameCount());
+  const f = timeline().frames[i];
+  im = renderFrame(f.t, f.ta);
   const bytes = im.data.length;
   if (cacheBytes + bytes <= CACHE_LIMIT) { cache.set(i, im); cacheBytes += bytes; }
   return im;
+}
+
+/* ---------------- timeline: output frames, and how the animation and the shiny effect line up ---------------- */
+let tlCache = null;
+// Returns { anim, L (s), c (shiny cycles per loop), k (stretch: output s per effect s), r (animation repeats),
+//   rate (animation s per output s), seq/cum (playback order), frames: [{ t, ta, d (ms) }] }.
+function timeline() {
+  if (tlCache) return tlCache;
+  if (!orig || !orig.animated) {
+    const n = frameCount(), d = [], total = Math.round(S.loop * 1000);
+    for (let i = 0; i < n; i++) d.push(Math.round(((i + 1) * total) / n) - Math.round((i * total) / n));
+    return (tlCache = { anim: false, L: S.loop, c: 1, k: 1, r: 1, frames: d.map((dd, i) => ({ t: (i * S.loop) / n, ta: (i * S.loop) / n, d: dd })) });
+  }
+  // playback order
+  let seq = orig.delays.map((d, fi) => ({ fi, d }));
+  if (S.animPlay === "reverse") seq.reverse();
+  else if (S.animPlay === "pingpong" && seq.length > 2) seq = seq.concat(seq.slice(1, -1).reverse());
+  const st = ((Math.round(S.animStart) % seq.length) + seq.length) % seq.length;
+  seq = seq.slice(st).concat(seq.slice(0, st));
+  const cum = []; let acc = 0; for (const e of seq) { cum.push(acc); acc += e.d; }
+  const Dsrc = acc / 1000;                                 // one pass of the animation, in its own seconds
+  const D = Dsrc / (S.animSpeed / 100);                    // ...after the user's speed change
+  const base = Math.max(0.05, S.loop);
+  const driftOf = (len, c) => Math.abs(len / (c * base) - 1);
+  let r = 1, c = 1, L = D;
+  if (S.animSync === "fit" || S.animSync === "repeat") {
+    const maxR = Math.max(1, Math.round(S.animMaxRepeats)), lim = S.animMaxDrift / 100;
+    let best = null;
+    for (let rr = 1; rr <= maxR; rr++) {
+      const cc = Math.max(1, Math.round((rr * D) / base)), dr = driftOf(rr * D, cc);
+      if (!best || dr < best.dr - 1e-9) best = { rr, cc, dr };
+      if (S.animSync === "fit" && dr <= lim) { best = { rr, cc, dr }; break; }
+      if (S.animSync === "repeat" && dr < 0.005) { best = { rr, cc, dr }; break; }
+    }
+    r = best.rr; c = best.cc; L = r * D;
+  } else if (S.animSync === "speed") {
+    // fewest repeats that need at most a 10% speed change; otherwise the smallest change available
+    const maxR = Math.max(1, Math.round(S.animMaxRepeats)); let best = null;
+    for (let rr = 1; rr <= maxR; rr++) {
+      const cc = Math.max(1, Math.round((rr * D) / base)), dr = driftOf(rr * D, cc);
+      if (!best || dr < best.dr - 1e-9) best = { rr, cc, dr };
+      if (dr <= 0.1) { best = { rr, cc, dr }; break; }
+    }
+    r = best.rr; c = best.cc; L = c * base;
+  } else { r = Math.max(1, Math.round(S.animRepeats)); c = Math.max(1, Math.round(S.animCycles)); L = r * D; }
+  const Lms = Math.max(20, Math.round((L * 1000) / 10) * 10); L = Lms / 1000;   // GIF timing is in 1/100 s
+  const rate = (r * Dsrc) / L;                             // animation seconds per output second
+  const k = L / (c * base);
+  // output frame boundaries (ms): every animation frame change, plus frame-rate ticks for smooth output
+  const animB = new Set(), all = new Set([0]);
+  for (let rep = 0; rep < r; rep++) for (const cu of cum) { const b = Math.round(((rep * Dsrc * 1000 + cu) / rate) / 10) * 10; if (b < Lms) { animB.add(b); all.add(b); } }
+  if (S.animFrames === "smooth") { const fps = Math.max(1, S.fps); for (let i = 0; ; i++) { const b = Math.round(((i * 1000) / fps) / 10) * 10; if (b >= Lms) break; all.add(b); } }
+  let list = [...all].sort((a, b) => a - b);
+  // no frame shorter than 20 ms (browsers slow those GIF frames down); drop the extra ticks first
+  for (let i = 0; i < list.length; ) {
+    const next = i + 1 < list.length ? list[i + 1] : Lms;
+    if (next - list[i] >= 20 || list.length === 1) { i++; continue; }
+    if (i + 1 < list.length && !animB.has(list[i + 1])) list.splice(i + 1, 1);
+    else if (i > 0 && !animB.has(list[i])) list.splice(i, 1);
+    else if (i + 1 < list.length) list.splice(i + 1, 1);
+    else { list.splice(i, 1); i = Math.max(0, i - 1); }
+  }
+  const frames = list.map((b, i) => { const e = i + 1 < list.length ? list[i + 1] : Lms; return { t: b / 1000, ta: (b + e) / 2000, d: e - b }; });
+  return (tlCache = { anim: true, L, c, k, r, rate, seq, cum, Dsrc, frames, base });
+}
+// Which source frame shows at output time t.
+function animFrameAt(t) {
+  const tl = timeline(), a = ((((t * tl.rate) % tl.Dsrc) + tl.Dsrc) % tl.Dsrc) * 1000, cum = tl.cum;
+  let lo = 0, hi = cum.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (cum[mid] <= a) lo = mid; else hi = mid - 1; }
+  return tl.seq[lo].fi;
+}
+function frameIndexAt(t) {
+  const fr = timeline().frames; let lo = 0, hi = fr.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (fr[mid].t <= t + 1e-9) lo = mid; else hi = mid - 1; }
+  return lo;
+}
+function animInfoHtml() {
+  if (!orig || !orig.animated) return "";
+  const tl = timeline(), srcMs = orig.delays.reduce((a, b) => a + b, 0);
+  const shinySpeed = (1 / tl.k) * 100, animPct = ((tl.r * tl.Dsrc) / tl.L) * 100;
+  const pct = (v) => `${v >= 99.95 && v <= 100.05 ? "100" : v.toFixed(1)}%`;
+  return `Source: <b>${orig.frames.length}</b> frames, <b>${(srcMs / 1000).toFixed(2)} s</b> per loop.<br>
+    Export: animation plays <b>${tl.r}×</b> at <b>${pct(animPct)}</b> speed · shiny runs <b>${tl.c}</b> cycle${tl.c > 1 ? "s" : ""} at <b>${pct(shinySpeed)}</b> of game speed<br>
+    Loop <b>${tl.L.toFixed(2)} s</b>, <b>${tl.frames.length}</b> frames.`;
 }
 
 /* ---------------- preview ---------------- */
 let playing = true, playStart = performance.now(), pausedAt = 0, lastShown = -1, holdOriginal = false, dirty = true;
 function invalidate() {
   if (orig && src && JSON.stringify(padding()) !== src.padKey) prepare();   // canvas size follows the effects
-  cache.clear(); cacheBytes = 0; dirty = true; $("scrub").max = String(S.loop);
+  tlCache = null;
+  cache.clear(); cacheBytes = 0; dirty = true; $("scrub").max = String(timeline().L);
+  if (widgets.animInfo) widgets.animInfo.set();
 }
-function currentTime() { return playing ? (((performance.now() - playStart) / 1000) % S.loop) : Math.min(pausedAt, S.loop); }
+function currentTime() { const L = timeline().L; return playing ? (((performance.now() - playStart) / 1000) % L) : Math.min(pausedAt, L); }
 function draw() {
   requestAnimationFrame(draw);
   if (!src) return;
-  const t = currentTime(), n = frameCount();
-  const i = Math.min(n - 1, Math.floor((t / S.loop) * n));
+  const t = currentTime(), n = timeline().frames.length;
+  const i = frameIndexAt(t);
   if (playing) $("scrub").value = String(t);
   $("time").textContent = `${t.toFixed(2)} s · ${i + 1}/${n}`;
   const key = holdOriginal ? -2 : i;
   if (key === lastShown && !dirty) return;
   lastShown = key; dirty = false;
-  vctx.putImageData(holdOriginal ? new ImageData(new Uint8ClampedArray(src.data), src.w, src.h) : frameImage(i), 0, 0);
+  const tl = timeline(), srcFrame = tl.anim ? src.frames[animFrameAt(tl.frames[i].ta)] : src.data;
+  vctx.putImageData(holdOriginal ? new ImageData(new Uint8ClampedArray(srcFrame), src.w, src.h) : frameImage(i), 0, 0);
 }
 requestAnimationFrame(draw);
 function setPlaying(on) {
@@ -1416,24 +1560,194 @@ $("backdrop").addEventListener("change", () => {
 });
 
 /* ---------------- loading ---------------- */
-async function decodeImage(buf) {
-  const bmp = await createImageBitmap(new Blob([buf]), { premultiplyAlpha: "none", colorSpaceConversion: "none" });
-  const c = document.createElement("canvas"); c.width = bmp.width; c.height = bmp.height;
+// Any format the browser can decode (PNG, JPG, WebP, AVIF, BMP, ICO, SVG, ...), first frame only.
+async function decodeImage(buf, type) {
+  let src_;
+  try { src_ = await createImageBitmap(new Blob([buf], type ? { type } : {}), { premultiplyAlpha: "none", colorSpaceConversion: "none" }); }
+  catch {                                            // e.g. SVG, which createImageBitmap won't take: go through an <img>
+    const u8 = new Uint8Array(buf), head = new TextDecoder().decode(u8.subarray(0, 512)).trimStart();
+    const mime = type || (head.startsWith("<") ? "image/svg+xml" : "");
+    const url = URL.createObjectURL(new Blob([buf], mime ? { type: mime } : {}));
+    try {
+      const img = new Image(); img.src = url; await img.decode();
+      if (!img.naturalWidth || !img.naturalHeight) { img.width = 512; img.height = 512; }
+      src_ = img;
+    } catch { URL.revokeObjectURL(url); throw new Error("this browser can't decode that file type (for PSD, TIFF and similar, open it in Photopea and use “Get from Photopea”)"); }
+  }
+  const w = src_.naturalWidth || src_.width || 512, h = src_.naturalHeight || src_.height || 512;
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
   const ctx = c.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(bmp, 0, 0);
-  return { canvas: c, data: ctx.getImageData(0, 0, c.width, c.height) };
+  ctx.drawImage(src_, 0, 0, w, h);
+  return { canvas: c, data: ctx.getImageData(0, 0, w, h) };
+}
+
+/* GIF decoder (all browsers): LZW, local/global palettes, transparency, interlacing, all disposal methods. */
+function lzwDecode(data, minCode, npix) {
+  const out = new Uint8Array(npix), clear = 1 << minCode, eoi = clear + 1;
+  const prefix = new Int16Array(4096), suffix = new Uint8Array(4096), stack = new Uint8Array(4097);
+  for (let i = 0; i < clear; i++) { prefix[i] = -1; suffix[i] = i; }
+  let size = minCode + 1, mask = (1 << size) - 1, next = eoi + 1, old = -1, first = 0, datum = 0, bits = 0, pi = 0, op = 0;
+  while (op < npix) {
+    while (bits < size) { if (pi >= data.length) return out; datum |= data[pi++] << bits; bits += 8; }
+    let code = datum & mask; datum >>>= size; bits -= size;
+    if (code === clear) { size = minCode + 1; mask = (1 << size) - 1; next = eoi + 1; old = -1; continue; }
+    if (code === eoi) break;
+    if (old === -1) { if (code >= clear) continue; out[op++] = suffix[code]; old = first = code; continue; }
+    const inCode = code; let top = 0;
+    if (code >= next) { stack[top++] = first; code = old; }
+    while (code > eoi) { stack[top++] = suffix[code]; code = prefix[code]; }
+    first = suffix[code]; stack[top++] = first;
+    if (next < 4096) { prefix[next] = old; suffix[next] = first; next++; if ((next & mask) === 0 && next < 4096) { size++; mask = (1 << size) - 1; } }
+    old = inCode;
+    while (top > 0 && op < npix) out[op++] = stack[--top];
+  }
+  return out;
+}
+function decodeGif(u8) {
+  const W = u8[6] | (u8[7] << 8), H = u8[8] | (u8[9] << 8), f = u8[10];
+  let p = 13, gct = null;
+  if (f & 0x80) { const n = 1 << ((f & 7) + 1); gct = u8.subarray(p, p + n * 3); p += n * 3; }
+  const canvas = new Uint8ClampedArray(W * H * 4), frames = [], delays = [];
+  let gce = { disp: 0, delay: 0, ti: -1 };
+  const skipBlocks = () => { while (p < u8.length && u8[p]) p += u8[p] + 1; p++; };
+  while (p < u8.length) {
+    const b = u8[p++];
+    if (b === 0x3b) break;
+    if (b === 0x21) {
+      const label = u8[p++];
+      if (label === 0xf9 && u8[p] >= 4) { const fl = u8[p + 1]; gce = { disp: (fl >> 2) & 7, delay: u8[p + 2] | (u8[p + 3] << 8), ti: fl & 1 ? u8[p + 4] : -1 }; }
+      skipBlocks(); continue;
+    }
+    if (b !== 0x2c) break;                          // unknown block: stop at what we have
+    const x0 = u8[p] | (u8[p + 1] << 8), y0 = u8[p + 2] | (u8[p + 3] << 8), w = u8[p + 4] | (u8[p + 5] << 8), h = u8[p + 6] | (u8[p + 7] << 8), fl = u8[p + 8];
+    p += 9;
+    let ct = gct;
+    if (fl & 0x80) { const n = 1 << ((fl & 7) + 1); ct = u8.subarray(p, p + n * 3); p += n * 3; }
+    const minCode = u8[p++];
+    let len = 0; for (let q = p; q < u8.length && u8[q]; q += u8[q] + 1) len += u8[q];
+    const lz = new Uint8Array(len); let o = 0;
+    while (p < u8.length && u8[p]) { lz.set(u8.subarray(p + 1, p + 1 + u8[p]), o); o += u8[p]; p += u8[p] + 1; }
+    p++;
+    const idx = lzwDecode(lz, minCode, w * h);
+    const prev = gce.disp === 3 ? canvas.slice() : null;
+    const rows = new Int32Array(h);
+    if (fl & 0x40) { let k = 0; for (const [s0, st] of [[0, 8], [4, 8], [2, 4], [1, 2]]) for (let y = s0; y < h; y += st) rows[k++] = y; }
+    else for (let y = 0; y < h; y++) rows[y] = y;
+    if (ct) for (let r = 0; r < h; r++) {
+      const yy = y0 + rows[r]; if (yy >= H) continue;
+      for (let x = 0; x < w; x++) {
+        const xx = x0 + x; if (xx >= W) continue;
+        const ci = idx[r * w + x]; if (ci === gce.ti || ci * 3 + 2 >= ct.length) continue;
+        const di = (yy * W + xx) * 4; canvas[di] = ct[ci * 3]; canvas[di + 1] = ct[ci * 3 + 1]; canvas[di + 2] = ct[ci * 3 + 2]; canvas[di + 3] = 255;
+      }
+    }
+    frames.push(new ImageData(canvas.slice(), W, H));
+    const d = gce.delay * 10; delays.push(d < 20 ? 100 : d);   // browsers play 0–10 ms GIF frames at 100 ms
+    if (gce.disp === 2) for (let y = y0; y < Math.min(H, y0 + h); y++) canvas.fill(0, (y * W + x0) * 4, (y * W + Math.min(W, x0 + w)) * 4);
+    else if (gce.disp === 3 && prev) canvas.set(prev);
+    gce = { disp: 0, delay: 0, ti: -1 };
+  }
+  if (!frames.length) throw new Error("no frames found in that GIF");
+  return { w0: W, h0: H, frames, delays };
+}
+/* APNG decoder (all browsers): rebuilds each frame as a small PNG for the browser to decode, then composites. */
+async function decodeApng(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  let p = 8, ihdr = null, W = 0, H = 0, hasActl = false, seenIdat = false;
+  const shared = [], frs = []; let cur = null, defaultIsFrame = false;
+  while (p + 8 <= u8.length) {
+    const len = dv.getUint32(p), type = String.fromCharCode(...u8.subarray(p + 4, p + 8)), body = u8.subarray(p + 8, p + 8 + len);
+    p += 12 + len;
+    if (type === "IHDR") { ihdr = body; W = dv.getUint32(p - 12 - len + 8); H = dv.getUint32(p - 12 - len + 12); }
+    else if (type === "acTL") hasActl = true;
+    else if (type === "fcTL") {
+      const b = new DataView(body.buffer, body.byteOffset, body.byteLength);
+      cur = { w: b.getUint32(4), h: b.getUint32(8), x: b.getUint32(12), y: b.getUint32(16), num: b.getUint16(20), den: b.getUint16(22) || 100, dispose: body[24], blend: body[25], data: [] };
+      if (!seenIdat) defaultIsFrame = true;
+      frs.push(cur);
+    } else if (type === "IDAT") { seenIdat = true; if (defaultIsFrame && cur) cur.data.push(body); }
+    else if (type === "fdAT") { if (cur) cur.data.push(body.subarray(4)); }
+    else if (type === "IEND") break;
+    else if (!seenIdat && ["PLTE", "tRNS", "gAMA", "sRGB", "iCCP", "cHRM", "sBIT"].includes(type)) shared.push([type, body]);
+  }
+  if (!hasActl || !frs.length) return null;
+  const canvas = new Uint8ClampedArray(W * H * 4), frames = [], delays = [];
+  for (const f of frs) {
+    if (!f.data.length) continue;
+    const hdr = new Uint8Array(ihdr); new DataView(hdr.buffer).setUint32(0, f.w); new DataView(hdr.buffer).setUint32(4, f.h);
+    const png = new Blob([SIG, chunk("IHDR", hdr), ...shared.map(([t, b]) => chunk(t, b)), ...f.data.map((d) => chunk("IDAT", d)), chunk("IEND", new Uint8Array(0))], { type: "image/png" });
+    const { data: im } = await decodeImage(await png.arrayBuffer(), "image/png");
+    const prev = f.dispose === 2 ? canvas.slice() : null;
+    for (let y = 0; y < f.h; y++) {
+      const yy = f.y + y; if (yy >= H) continue;
+      for (let x = 0; x < f.w; x++) {
+        const xx = f.x + x; if (xx >= W) continue;
+        const si = (y * f.w + x) * 4, di = (yy * W + xx) * 4, sa = im.data[si + 3] / 255;
+        if (f.blend === 0 || sa >= 1) { canvas[di] = im.data[si]; canvas[di + 1] = im.data[si + 1]; canvas[di + 2] = im.data[si + 2]; canvas[di + 3] = im.data[si + 3]; }
+        else if (sa > 0) {
+          const da = canvas[di + 3] / 255, oa = sa + da * (1 - sa);
+          for (let c = 0; c < 3; c++) canvas[di + c] = (im.data[si + c] * sa + canvas[di + c] * da * (1 - sa)) / oa;
+          canvas[di + 3] = oa * 255;
+        }
+      }
+    }
+    frames.push(new ImageData(canvas.slice(), W, H));
+    const d = Math.round((f.num / f.den) * 1000); delays.push(d <= 10 ? 100 : Math.max(20, d));
+    if (f.dispose === 1) for (let y = f.y; y < Math.min(H, f.y + f.h); y++) canvas.fill(0, (y * W + f.x) * 4, (y * W + Math.min(W, f.x + f.w)) * 4);
+    else if (f.dispose === 2 && prev) canvas.set(prev);
+  }
+  return frames.length ? { w0: W, h0: H, frames, delays } : null;
+}
+/* Animated WebP (and anything else ImageDecoder plays): Chrome / Edge only. */
+async function decodeWithImageDecoder(u8, type) {
+  if (typeof ImageDecoder === "undefined") return null;
+  try {
+    const dec = new ImageDecoder({ data: u8, type }); await dec.tracks.ready;
+    const n = dec.tracks.selectedTrack?.frameCount || 1;
+    if (n < 2) { dec.close(); return null; }
+    const frames = [], delays = [];
+    for (let i = 0; i < n; i++) {
+      const { image } = await dec.decode({ frameIndex: i });
+      const c = document.createElement("canvas"); c.width = image.displayWidth; c.height = image.displayHeight;
+      const ctx = c.getContext("2d", { willReadFrequently: true }); ctx.drawImage(image, 0, 0);
+      frames.push(ctx.getImageData(0, 0, c.width, c.height));
+      const d = Math.round((image.duration || 100000) / 1000); delays.push(d <= 10 ? 100 : Math.max(20, d));
+      image.close();
+    }
+    dec.close();
+    return { w0: frames[0].width, h0: frames[0].height, frames, delays };
+  } catch { return null; }
+}
+// Detects the format from its bytes and returns { w0, h0, frames, delays, animated, note }.
+async function decodeAny(buf) {
+  const u8 = new Uint8Array(buf), asc = (a, b) => String.fromCharCode(...u8.subarray(a, b));
+  let res = null, note = "";
+  if (asc(0, 4) === "GIF8") res = decodeGif(u8);
+  else if (u8[0] === 0x89 && asc(1, 4) === "PNG") res = await decodeApng(u8);
+  else if (asc(0, 4) === "RIFF" && asc(8, 12) === "WEBP") {
+    const isAnim = asc(12, 16) === "VP8X" && (u8[20] & 0x02);
+    if (isAnim) { res = await decodeWithImageDecoder(u8, "image/webp"); if (!res) note = "This browser can only show the first frame of animated WebP (Chrome and Edge can play it). "; }
+  }
+  if (!res) { const { data } = await decodeImage(buf); res = { w0: data.width, h0: data.height, frames: [data], delays: [100] }; }
+  res.animated = res.frames.length > 1;
+  res.note = note;
+  return res;
 }
 async function loadBuffer(buf, label) {
   try {
-    const { data } = await decodeImage(buf);
-    if (data.width * data.height > 4096 * 4096) throw new Error("image is larger than 4096×4096");
-    orig = data; prepare();
+    const dec = await decodeAny(buf);
+    if (dec.w0 * dec.h0 > 4096 * 4096) throw new Error("image is larger than 4096×4096");
+    if (dec.w0 * dec.h0 * 4 * dec.frames.length > 600 * 1024 * 1024) throw new Error(`too many frames at that size (${dec.frames.length} frames of ${dec.w0}×${dec.h0})`);
+    orig = dec;
+    if (widgets.animStart) { const rng = widgets.animStart.row.querySelector("input[type=range]"); rng.max = Math.max(1, dec.frames.length - 1); }
+    if (S.animStart >= dec.frames.length) S.animStart = 0;
+    tlCache = null; prepare(); syncVisibility();
     $("empty").hidden = true;
     for (const id of ["xGif", "xApng", "xSheet", "xZip", "xStill"]) $(id).disabled = false;
     $("pixelated").checked = Math.max(src.w, src.h) <= 256; view.classList.toggle("pixel", $("pixelated").checked);
     fitView(); invalidate();
-    let opaque = 0; for (let p = 0; p < src.n; p++) if (src.A[p] > 0.99) opaque++;
-    say(`${label ? label + ": " : ""}${orig.width}×${orig.height}. ` +
+    const A0 = frameArrays(0).A; let opaque = 0; for (let p = 0; p < src.n; p++) if (A0[p] > 0.99) opaque++;
+    say(`${label ? label + ": " : ""}${orig.w0}×${orig.h0}${orig.animated ? `, ${orig.frames.length} frames (${(orig.delays.reduce((a, b) => a + b, 0) / 1000).toFixed(2)} s)` : ""}. ${orig.note}` +
       (opaque === src.n ? "No transparency: the effects will also cover the background. Cut the sprite out for the game look." :
        "Ready. The effects only touch the sprite's opaque pixels (plus the pulse outline and sparkles)."));
   } catch (e) { say("Couldn't read that image: " + e.message); }
@@ -1463,7 +1777,12 @@ $("grab").addEventListener("click", () => {
   ppWaiting = true; say("Asking Photopea for the document…");
   window.parent.postMessage('app.activeDocument.saveToOE("png");', "*");
 });
-if (!PP) $("grab").title = "Only works when this page is opened as a Photopea plugin";
+$("grabAnim").addEventListener("click", () => {
+  if (!PP) return say("This page isn't running inside Photopea. Use “Open image…”, drag and drop, or paste instead.");
+  ppWaiting = true; say("Asking Photopea for the animation…");
+  window.parent.postMessage('app.activeDocument.saveToOE("gif");', "*");
+});
+if (!PP) { $("grab").title = "Only works when this page is opened as a Photopea plugin"; $("grabAnim").title = $("grab").title; }
 function sendToPhotopea(bytes) { window.parent.postMessage(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), "*"); }
 
 /* ---------------- output helpers ---------------- */
@@ -1471,7 +1790,7 @@ function sendToPhotopea(bytes) { window.parent.postMessage(bytes.buffer.slice(by
 let exportBox = null;
 async function computeBox() {
   if (!S.trim) return { x: 0, y: 0, w: src.w, h: src.h };
-  const n = frameCount(), { w, h } = src;
+  const n = timeline().frames.length, { w, h } = src;
   let x0 = w, y0 = h, x1 = -1, y1 = -1;
   for (let i = 0; i < n; i++) {
     if (i % 8 === 0) { say(`Measuring frames ${i + 1}/${n}…`); await tick(); }
@@ -1495,16 +1814,18 @@ function finishFrame(im) {                         // crop + export upscale (nea
       const si = ((sy + bx.y) * fullW + ((x / sc) | 0) + bx.x) * 4, di = (y * W + x) * 4;
       if (matte) {
         const a = data[si + 3] / 255;
-        out[di] = data[si] * a + matte[0] * (1 - a) + 0.5; out[di + 1] = data[si + 1] * a + matte[1] * (1 - a) + 0.5;
-        out[di + 2] = data[si + 2] * a + matte[2] * (1 - a) + 0.5; out[di + 3] = 255;
+        out[di] = data[si] * a + matte[0] * (1 - a); out[di + 1] = data[si + 1] * a + matte[1] * (1 - a);
+        out[di + 2] = data[si + 2] * a + matte[2] * (1 - a); out[di + 3] = 255;
       } else { out[di] = data[si]; out[di + 1] = data[si + 1]; out[di + 2] = data[si + 2]; out[di + 3] = data[si + 3]; }
     }
   }
   return { w: W, h: H, data: out };
 }
 function delays(unit) {                            // ms per frame, rounded to `unit`, summing to the exact loop
-  const n = frameCount(), total = Math.round((S.loop * 1000) / unit), d = [];
-  for (let i = 0; i < n; i++) d.push((Math.round(((i + 1) * total) / n) - Math.round((i * total) / n)) * unit);
+  const tl = timeline(), n = tl.frames.length, total = Math.round((tl.L * 1000) / unit), d = [];
+  let acc = 0;
+  for (let i = 0; i < n; i++) { acc += tl.frames[i].d; d.push((Math.round(acc / unit) - Math.round((acc - tl.frames[i].d) / unit)) * unit); }
+  const sum = d.reduce((a, b) => a + b, 0); if (n && sum !== total * unit) d[n - 1] += total * unit - sum;
   return d;
 }
 const tick = () => new Promise((r) => setTimeout(r));
@@ -1526,7 +1847,7 @@ const baseName = () => { const b = exportBox || src, sc = Math.max(1, Math.round
 
 async function encodeGif() {
   const { GIFEncoder, quantize, applyPalette } = gifenc;
-  const n = frameCount(), d = delays(10), gif = GIFEncoder(), cutA = S.gifAlpha;
+  const n = timeline().frames.length, d = delays(10), gif = GIFEncoder(), cutA = S.gifAlpha;
   for (let i = 0; i < n; i++) {
     if (i % 2 === 0) { say(`Encoding GIF frame ${i + 1}/${n}…`); await tick(); }
     const f = finishFrame(frameImage(i)), px = f.w * f.h, rgba = f.data;
@@ -1546,7 +1867,7 @@ async function encodeGif() {
 $("xGif").addEventListener("click", () => job("GIF", async () => {
   const bytes = await encodeGif(); lastGif = bytes;
   download(new Blob([bytes], { type: "image/gif" }), baseName() + ".gif");
-  say(`GIF saved (${(bytes.length / 1024).toFixed(0)} KB, ${frameCount()} frames, ${S.loop} s loop).`);
+  say(`GIF saved (${(bytes.length / 1024).toFixed(0)} KB, ${timeline().frames.length} frames, ${timeline().L.toFixed(2)} s loop).`);
 }));
 $("xPP").addEventListener("click", () => job("Send", async () => {
   lastGif = await encodeGif();
@@ -1575,7 +1896,7 @@ const SIG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
 const ihdr = (w, h) => chunk("IHDR", new Uint8Array([...u32(w), ...u32(h), 8, 6, 0, 0, 0]));
 async function pngBytes(f) { return new Blob([SIG, ihdr(f.w, f.h), chunk("IDAT", await idat(f)), chunk("IEND", new Uint8Array(0))]); }
 $("xApng").addEventListener("click", () => job("APNG", async () => {
-  const n = frameCount(), d = delays(1), parts = [SIG];
+  const n = timeline().frames.length, d = delays(1), parts = [SIG];
   let seq = 0;
   for (let i = 0; i < n; i++) {
     say(`Encoding APNG frame ${i + 1}/${n}…`); await tick();
@@ -1592,12 +1913,12 @@ $("xApng").addEventListener("click", () => job("APNG", async () => {
   say(`APNG saved (${(blob.size / 1024).toFixed(0)} KB, ${n} frames). Full alpha, exact colours.`);
 }));
 $("xStill").addEventListener("click", () => job("PNG", async () => {
-  const n = frameCount(), i = Math.min(n - 1, Math.floor((currentTime() / S.loop) * n));
+  const n = timeline().frames.length, i = frameIndexAt(currentTime());
   download(await pngBytes(finishFrame(frameImage(i))), `${baseName()}_frame${String(i + 1).padStart(3, "0")}.png`);
   say(`Saved frame ${i + 1}/${n}. Pause and scrub to pick a different one.`);
 }));
 $("xSheet").addEventListener("click", () => job("Sprite sheet", async () => {
-  const n = frameCount(), sc = Math.max(1, Math.round(S.scale)), fw = exportBox.w * sc, fh = exportBox.h * sc;
+  const n = timeline().frames.length, sc = Math.max(1, Math.round(S.scale)), fw = exportBox.w * sc, fh = exportBox.h * sc;
   const cols = S.sheetCols > 0 ? Math.min(n, S.sheetCols) : Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols);
   if (fw * cols * fh * rows > 16384 * 16384) throw new Error("sheet would be too large; lower the upscale or frame rate");
   const W = fw * cols, data = new Uint8ClampedArray(W * fh * rows * 4);
@@ -1610,12 +1931,12 @@ $("xSheet").addEventListener("click", () => job("Sprite sheet", async () => {
   say(`Sprite sheet saved: ${cols}×${rows} grid, ${n} frames of ${fw}×${fh}, read left-to-right, top-to-bottom.`);
 }));
 $("xZip").addEventListener("click", () => job("ZIP", async () => {
-  const n = frameCount(), files = [];
+  const n = timeline().frames.length, files = [];
   for (let i = 0; i < n; i++) {
     say(`Encoding PNG ${i + 1}/${n}…`); await tick();
     files.push({ name: `frame_${String(i + 1).padStart(3, "0")}.png`, bytes: new Uint8Array(await (await pngBytes(finishFrame(frameImage(i)))).arrayBuffer()) });
   }
-  const info = `Shiny Maker export\nframes: ${n}\nloop: ${S.loop} s\nframe delays (ms): ${delays(1).join(", ")}\nsettings: ${JSON.stringify(S)}\n`;
+  const info = `Shiny Maker export\nframes: ${n}\nloop: ${timeline().L} s\nframe delays (ms): ${delays(1).join(", ")}\nsettings: ${JSON.stringify(S)}\n`;
   files.push({ name: "timing.txt", bytes: new TextEncoder().encode(info) });
   const parts = [], central = []; let off = 0;
   for (const f of files) {
@@ -1635,7 +1956,7 @@ $("xPP").disabled = !PP;
 if (!PP) $("xPP").title = "Only works when this page is opened as a Photopea plugin";
 
 // Test hook: lets automated checks render a frame at an exact time.
-window.__shiny = { S, GAME, load: loadBuffer, render: (t) => renderFrame(t), get src() { return src; }, invalidate, loadPreset, randomise, addSparkFiles, sparkSet, get ready() { return !!builtin.sparkle; } };
+window.__shiny = { S, GAME, load: loadBuffer, render: (t, ta) => renderFrame(t, ta), timeline: () => timeline(), get orig() { return orig; }, frameImage: (i) => frameImage(i), get src() { return src; }, invalidate, loadPreset, randomise, addSparkFiles, sparkSet, get ready() { return !!builtin.sparkle; } };
 </script>
 </body>
 </html>
